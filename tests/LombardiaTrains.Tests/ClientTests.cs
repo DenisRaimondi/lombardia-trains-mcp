@@ -14,12 +14,12 @@ public class ViaggiaTrenoTests
     private static ViaggiaTrenoClient NewClient() => new(new HttpClient());
 
     [Fact]
-    public async Task SearchStation_finds_Castellanza()
+    public async Task SearchStation_finds_a_known_station()
     {
-        var stations = await NewClient().SearchStationAsync("castellanza");
+        var stations = await NewClient().SearchStationAsync("milano centrale");
 
         Assert.NotEmpty(stations);
-        Assert.Contains(stations, s => s.LongName?.Contains("CASTELLANZA", StringComparison.OrdinalIgnoreCase) == true);
+        Assert.Contains(stations, s => s.LongName?.Contains("MILANO CENTRALE", StringComparison.OrdinalIgnoreCase) == true);
         Assert.All(stations, s => Assert.StartsWith("S", s.Id));
     }
 

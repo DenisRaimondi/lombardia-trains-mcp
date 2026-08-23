@@ -16,9 +16,10 @@ namespace LombardiaTrains.Mcp.Tools;
 /// Two decisions are deliberate and worth stating.
 ///
 /// A station name is never resolved by silently taking the first match.
-/// "Milano" is twenty-six stations, and "Busto Arsizio" is two on different
-/// networks with entirely different trains — answering about the wrong one
-/// while sounding certain is worse than asking which was meant.
+/// "Milano" alone is twenty-six stations, and many towns have both a national
+/// station and a separate "Nord" one served by different trains — answering
+/// about the wrong one while sounding certain is worse than asking which was
+/// meant.
 ///
 /// And when a place is not covered, the answer says so and says where the
 /// coverage ends, so the model can decline instead of inventing a train.
@@ -51,11 +52,11 @@ public sealed class TrainTools(
 
     [McpServerTool(Name = "search_station")]
     [Description("Find railway stations by name and return their codes. Names are frequently " +
-                 "ambiguous — 'Milano' matches twenty-six stations, and towns often have both an " +
-                 "RFI station and a separate Nord/FNM one served by different trains — so check " +
+                 "ambiguous — 'Milano' matches twenty-six stations, and many towns have both a " +
+                 "national station and a separate Nord one served by different trains — so check " +
                  "here first when the user gave a name rather than a code.")]
     public async Task<string> SearchStationAsync(
-        [Description("Full or partial station name, for example 'castellanza' or 'milano cadorna'.")]
+        [Description("Full or partial station name, for example 'milano centrale' or 'como'.")]
         string name,
         CancellationToken ct = default)
     {
@@ -77,7 +78,7 @@ public sealed class TrainTools(
                  "(negative means early) and platform ('-' when not yet assigned). Works for " +
                  "future dates as well as today.")]
     public Task<string> GetDeparturesAsync(
-        [Description("Station code such as 'S01136', or a name such as 'castellanza'.")]
+        [Description("Station code such as 'S01136', or a name such as 'milano centrale'.")]
         string station,
         [Description("When, as 'HH:mm' for today or ISO '2026-08-29T09:00' for another day. " +
                      "Defaults to now. Call the 'now' tool first if the user said something " +
@@ -91,7 +92,7 @@ public sealed class TrainTools(
     [McpServerTool(Name = "get_arrivals")]
     [Description("Arrival board for a station: time, train, origin, delay and platform.")]
     public Task<string> GetArrivalsAsync(
-        [Description("Station code such as 'S01136', or a name such as 'castellanza'.")]
+        [Description("Station code such as 'S01136', or a name such as 'milano centrale'.")]
         string station,
         [Description("When, as 'HH:mm' for today or ISO '2026-08-29T09:00' for another day.")]
         string? at = null,

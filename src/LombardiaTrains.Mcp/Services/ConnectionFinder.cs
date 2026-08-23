@@ -167,27 +167,18 @@ public sealed class ConnectionFinder(ViaggiaTrenoClient viaggiaTreno, TrenordCli
         var wanted = Normalise(destination);
         var start = Normalise(origin);
 
-        var from = -1;
-        for (var i = 0; i < stopNames.Count; i++)
-        {
-            if (!Matches(stopNames[i], start)) continue;
-            from = i;
-            break;
-        }
+        var from = IndexOf(stopNames, start, 0);
 
         if (from >= 0)
         {
-            for (var i = from + 1; i < stopNames.Count; i++)
-                if (Matches(stopNames[i], wanted))
-                    return (from, i);
-
-            return (from, -1);
+            var to = IndexOf(stopNames, wanted, from + 1);
+            return (from, to);
         }
 
-        // The origin could not be matched by name, which happens whenever the
-        // caller passed a station code. The train still calls there — it came
-        // off that station's own board — so its position is fixed by time
-        // instead: the destination has to be reached after the board time.
+        // The origin could not be matched by name at all. The train still calls
+        // there — it came off that station's own board — so its position is
+        // fixed by time instead: the destination has to be reached after the
+        // board time.
         //
         // Without this the search matches stops the train has already left. A
         // Malpensa-bound service that STARTS at Milano Cadorna would otherwise
@@ -195,7 +186,8 @@ public sealed class ConnectionFinder(ViaggiaTrenoClient viaggiaTreno, TrenordCli
         // departed.
         for (var i = 0; i < stopNames.Count; i++)
         {
-            if (!Matches(stopNames[i], wanted)) continue;
+            if (!MatchesExactly(stopNames[i], wanted) && !MatchesLoosely(stopNames[i], wanted))
+                continue;
             if (IsAfter(stopTimes.ElementAtOrDefault(i), boardDeparture))
                 return (0, i);
         }
@@ -214,18 +206,44 @@ public sealed class ConnectionFinder(ViaggiaTrenoClient viaggiaTreno, TrenordCli
     }
 
     /// <summary>
-    /// Station names are spelled differently by the two sources: "MILANO
-    /// CADORNA" here, "Milano Cadorna FN" there, "MILANO NORD CADORNA"
-    /// elsewhere. Comparison is done on normalised text and accepts either
-    /// side containing the other, which is loose enough for real timetables
-    /// without matching unrelated stations.
+    /// The two sources spell the same station differently, so some tolerance is
+    /// needed — but not much, and it has to be applied in the right order.
+    ///
+    /// Loose containment alone is actively dangerous here. Several towns have
+    /// both a national-network station and a separate "Nord" one on the FNM
+    /// lines, and the second name contains the first. They are different
+    /// stations, often on the same train ten minutes and one platform apart, so
+    /// matching the wrong one sends the traveller to the wrong building.
+    ///
+    /// So callers must try <see cref="MatchesExactly"/> across the whole list
+    /// first, and only fall back to <see cref="MatchesLoosely"/> if nothing
+    /// matched exactly.
     /// </summary>
-    private static bool Matches(string? stopName, string normalisedWanted)
+    private static bool MatchesExactly(string? stopName, string normalisedWanted)
+    {
+        if (string.IsNullOrWhiteSpace(stopName) || normalisedWanted.Length == 0) return false;
+        return string.Equals(Normalise(stopName), normalisedWanted, StringComparison.Ordinal);
+    }
+
+    private static bool MatchesLoosely(string? stopName, string normalisedWanted)
     {
         if (string.IsNullOrWhiteSpace(stopName) || normalisedWanted.Length == 0) return false;
         var actual = Normalise(stopName);
         return actual.Contains(normalisedWanted, StringComparison.Ordinal)
             || normalisedWanted.Contains(actual, StringComparison.Ordinal);
+    }
+
+    /// <summary>Index of the first stop matching exactly, then loosely, or -1.</summary>
+    private static int IndexOf(
+        IReadOnlyList<string?> stopNames, string normalisedWanted, int startAt)
+    {
+        for (var i = startAt; i < stopNames.Count; i++)
+            if (MatchesExactly(stopNames[i], normalisedWanted)) return i;
+
+        for (var i = startAt; i < stopNames.Count; i++)
+            if (MatchesLoosely(stopNames[i], normalisedWanted)) return i;
+
+        return -1;
     }
 
     internal static string Normalise(string value)
