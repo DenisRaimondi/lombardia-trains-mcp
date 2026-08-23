@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>LombardiaTrains.Mcp</RootNamespace>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <!-- Packaged as a .NET tool: that is how an MCP server gets installed and
+       launched by a client, with `dnx` or `dotnet tool install`. -->
+  <PropertyGroup>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>lombardia-trains-mcp</ToolCommandName>
+    <PackageId>LombardiaTrains.Mcp</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Denis Raimondi</Authors>
+    <Title>Lombardia Trains MCP server</Title>
+    <Description>MCP server for live Lombardy train information. Queries the public ViaggiaTreno (RFI/Trenitalia) and Trenord APIs for departure and arrival boards, delays, platforms, stop-by-stop progress, cancellations and crowding. No API key required.</Description>
+    <PackageTags>mcp;model-context-protocol;trains;railway;italy;lombardia;trenord;viaggiatreno;transit</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/DenisRaimondi/lombardia-trains-mcp</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/DenisRaimondi/lombardia-trains-mcp</PackageProjectUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <None Include="../../.mcp/server.json" Pack="true" PackagePath="/.mcp/" Condition="Exists('../../.mcp/server.json')" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.11" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.11" />
+    <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
+  </ItemGroup>
+
+</Project>
