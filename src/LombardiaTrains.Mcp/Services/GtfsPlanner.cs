@@ -50,8 +50,8 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
         var active = timetable.StopTimes
             .Where(st => st.TripId is not null
                          && timetable.Trips.TryGetValue(st.TripId, out var trip)
-                         && trip.ServiceId is not null
-                         && running.Contains(trip.ServiceId))
+                         && GtfsClient.ServiceKey(trip.ServiceId) is { } key
+                         && running.Contains(key))
             .GroupBy(st => st.TripId!)
             .ToDictionary(g => g.Key, g => g.OrderBy(st => st.Seq).ToList());
 

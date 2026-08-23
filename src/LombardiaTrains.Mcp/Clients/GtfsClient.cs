@@ -97,9 +97,17 @@ public sealed class GtfsClient
     }
 
     /// <summary>
-    /// Service ids running on a date. The feed lists every service-date pair
-    /// explicitly, so this is the whole answer rather than a set of exceptions
-    /// layered over a weekly pattern.
+    /// Services running on a date, as join keys.
+    ///
+    /// The two files disagree about how a service is named. trips writes
+    /// "124865-0b0cb949", calendar_dates writes "124865-2026-08-21-2026-08-30":
+    /// the same service, suffixed with a hash in one export and with its
+    /// validity period in the other. Joining on the full string matches nothing
+    /// at all, so both sides are reduced to the part before the first hyphen,
+    /// which is the service number they share.
+    ///
+    /// Past that, the feed lists every service-date pair explicitly, so this is
+    /// the whole answer rather than exceptions layered over a weekly pattern.
     /// </summary>
     public async Task<HashSet<string>> GetServicesOnAsync(DateOnly date, CancellationToken ct = default)
     {
@@ -109,13 +117,21 @@ public sealed class GtfsClient
         var rows = await FetchAllAsync<GtfsCalendarDate>(
             CalendarDates, ct, $"$where=date='{key}' AND exception_type='1'");
 
-        var services = rows.Select(r => r.ServiceId)
+        var services = rows.Select(r => ServiceKey(r.ServiceId))
                            .Where(s => s is not null)
                            .Select(s => s!)
                            .ToHashSet(StringComparer.Ordinal);
 
         _servicesByDate[key] = services;
         return services;
+    }
+
+    /// <summary>The service number the two files agree on.</summary>
+    public static string? ServiceKey(string? serviceId)
+    {
+        if (string.IsNullOrWhiteSpace(serviceId)) return null;
+        var cut = serviceId.IndexOf('-');
+        return cut > 0 ? serviceId[..cut] : serviceId;
     }
 
     private async Task<List<T>> FetchAllAsync<T>(

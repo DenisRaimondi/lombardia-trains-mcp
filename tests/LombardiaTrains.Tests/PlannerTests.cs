@@ -33,7 +33,7 @@ public class GtfsPlannerTests(ITestOutputHelper output)
     {
         // Busto Arsizio to Lugano: the regional feed reaches into Ticino.
         var journeys = await NewPlanner().PlanAsync(
-            "S01031", "S10000", new DateOnly(2026, 8, 29), new TimeSpan(9, 0, 0), maxResults: 3);
+            "S01031", "S05300", new DateOnly(2026, 8, 29), new TimeSpan(9, 0, 0), maxResults: 3);
 
         foreach (var j in journeys)
         {
