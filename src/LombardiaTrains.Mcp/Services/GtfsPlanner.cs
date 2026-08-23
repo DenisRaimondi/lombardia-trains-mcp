@@ -29,6 +29,12 @@ public sealed record PlannedJourney(IReadOnlyList<PlannedLeg> Legs)
 /// A transfer needs a real minimum. Five minutes is enough on the same island
 /// platform and not enough anywhere else, so the floor is set where a traveller
 /// would actually make it rather than where the timetable technically allows.
+///
+/// Results are ranked by when they arrive, not by when they leave. Someone asking
+/// how to get somewhere wants to be there soonest, and ordering by departure puts
+/// a train that leaves four minutes earlier and arrives forty minutes later at the
+/// top of the list — which is how a slow route through a distant junction came to
+/// be offered ahead of the obvious one.
 /// </summary>
 public sealed class GtfsPlanner(GtfsClient gtfs)
 {
@@ -43,17 +49,26 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
         int maxResults = 5,
         CancellationToken ct = default)
     {
+        if (string.Equals(fromStopId, toStopId, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException(
+                "Origin and destination are the same stop. Asked for a journey between a place " +
+                "and itself, a search over departures and arrivals will happily answer with a " +
+                "trip out and a trip back: a valid itinerary, and never what was meant.",
+                nameof(toStopId));
+
         var timetable = await gtfs.GetTimetableAsync(ct);
         var running = await gtfs.GetServicesOnAsync(date, ct);
 
-        // Only the trips that actually run on the requested day.
+        // Only the trips that actually run on the requested day, with each
+        // trip's clock made monotonic so a service crossing midnight does not
+        // appear to arrive before it left.
         var active = timetable.StopTimes
             .Where(st => st.TripId is not null
                          && timetable.Trips.TryGetValue(st.TripId, out var trip)
                          && GtfsClient.ServiceKey(trip.ServiceId) is { } key
                          && running.Contains(key))
             .GroupBy(st => st.TripId!)
-            .ToDictionary(g => g.Key, g => g.OrderBy(st => st.Seq).ToList());
+            .ToDictionary(g => g.Key, g => TripTimeline.Normalise(g));
 
         var direct = FindDirect(active, timetable, fromStopId, toStopId, notBefore);
         if (direct.Count >= maxResults)
@@ -62,14 +77,15 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
         var viaChange = FindOneChange(active, timetable, fromStopId, toStopId, notBefore);
 
         return direct.Concat(viaChange)
-            .OrderBy(j => j.Departure)
+            .OrderBy(j => j.Arrival)
+            .ThenBy(j => j.Changes)
             .ThenBy(j => j.DurationMinutes)
             .Take(maxResults)
             .ToList();
     }
 
     private static List<PlannedJourney> FindDirect(
-        Dictionary<string, List<GtfsStopTime>> active, GtfsTimetable timetable,
+        Dictionary<string, List<TimedStop>> active, GtfsTimetable timetable,
         string from, string to, TimeSpan notBefore)
     {
         var result = new List<PlannedJourney>();
@@ -80,15 +96,15 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
             if (leg is not null) result.Add(new PlannedJourney([leg]));
         }
 
-        return result.OrderBy(j => j.Departure).ToList();
+        return result.OrderBy(j => j.Arrival).ThenBy(j => j.Departure).ToList();
     }
 
     private static List<PlannedJourney> FindOneChange(
-        Dictionary<string, List<GtfsStopTime>> active, GtfsTimetable timetable,
+        Dictionary<string, List<TimedStop>> active, GtfsTimetable timetable,
         string from, string to, TimeSpan notBefore)
     {
         // Everywhere reachable from the origin, with the earliest arrival at each.
-        var reachable = new Dictionary<string, (TimeSpan Arrival, string TripId, List<GtfsStopTime> Stops)>();
+        var reachable = new Dictionary<string, (TimeSpan Arrival, string TripId, List<TimedStop> Stops)>();
 
         foreach (var (tripId, stops) in active)
         {
@@ -98,7 +114,7 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
 
             foreach (var stop in stops.Where(s => s.Seq > boarding.Seq))
             {
-                if (stop.StopId is null || stop.Arrival is null) continue;
+                if (stop.Arrival is null) continue;
                 if (!reachable.TryGetValue(stop.StopId, out var best) || stop.Arrival < best.Arrival)
                     reachable[stop.StopId] = (stop.Arrival.Value, tripId, stops);
             }
@@ -110,7 +126,7 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
         {
             foreach (var boarding in stops)
             {
-                if (boarding.StopId is null || boarding.Departure is null) continue;
+                if (boarding.Departure is null) continue;
                 if (boarding.StopId == from) continue;
                 if (!reachable.TryGetValue(boarding.StopId, out var arrival)) continue;
 
@@ -133,7 +149,7 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
         return journeys
             .GroupBy(j => (j.Departure, j.Arrival))
             .Select(g => g.OrderBy(j => j.DurationMinutes).First())
-            .OrderBy(j => j.Departure)
+            .OrderBy(j => j.Arrival)
             .ToList();
     }
 
@@ -143,7 +159,7 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
     /// a train heading the other way from being offered.
     /// </summary>
     private static PlannedLeg? BuildLeg(
-        List<GtfsStopTime> stops, GtfsTimetable timetable, string tripId,
+        List<TimedStop> stops, GtfsTimetable timetable, string tripId,
         string from, string to, TimeSpan notBefore)
     {
         var boarding = stops.FirstOrDefault(s => s.StopId == from && s.Departure >= notBefore);
