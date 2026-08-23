@@ -28,6 +28,7 @@ namespace LombardiaTrains.Mcp.Tools;
 public sealed class TrainTools(
     ViaggiaTrenoClient viaggiaTreno,
     TrenordClient trenord,
+    SwissTransportClient swiss,
     ConnectionFinder connections)
 {
     private const string Coverage =
@@ -143,6 +144,102 @@ public sealed class TrainTools(
                 $"{FormatDelay(c.Delay),5}  platform {c.Platform ?? "-"}  ({stops}){cancelled}");
         }
         return sb.ToString();
+    }
+
+    [McpServerTool(Name = "find_journey")]
+    [Description("Full journey between two places, changes included, and across the Swiss border. " +
+                 "Use this rather than find_connection whenever the two places are not obviously on " +
+                 "the same line, or when either of them is in Switzerland. Plans from Swiss open " +
+                 "timetable data and adds the real delay of the first Italian train from the " +
+                 "Italian live sources, which the planner itself does not carry.")]
+    public async Task<string> FindJourneyAsync(
+        [Description("Origin, as a place or station name: 'Milano Centrale', 'Malpensa', 'Como'.")]
+        string from,
+        [Description("Destination, as a place or station name. May be in Switzerland: 'Lugano', 'Chiasso'.")]
+        string to,
+        [Description("When to leave, as 'HH:mm' for today or ISO '2026-08-29T09:00'. Defaults to now.")]
+        string? at = null,
+        [Description("How many journeys to return. Default 3.")]
+        int limit = 3,
+        CancellationToken ct = default)
+    {
+        var when = ParseWhen(at);
+        var journeys = await swiss.GetConnectionsAsync(from, to, when, Math.Clamp(limit, 1, 6), ct);
+
+        if (journeys.Count == 0)
+            return $"No journey found from '{from}' to '{to}' around {Stamp(when)}. " +
+                   "Check the spelling of both places, or try a nearby major station.";
+
+        var sb = new StringBuilder($"{from} -> {to}, from {Stamp(when)}\n");
+
+        foreach (var journey in journeys)
+        {
+            var changes = journey.Transfers switch
+            {
+                0 or null => "direct",
+                1 => "1 change",
+                var n => $"{n} changes"
+            };
+            var duration = journey.DurationMinutes is { } m ? $"{m / 60}h{m % 60:00}" : "?";
+
+            sb.AppendLine(
+                $"\n  {journey.From?.Departure:HH\\:mm} {journey.From?.Name} " +
+                $"-> {journey.To?.Arrival:HH\\:mm} {journey.To?.Name}   {duration}, {changes}");
+
+            // Walking and connecting legs are shown too. Hiding them leaves a
+            // gap between the stated start and the first train, and the reader
+            // has no way to tell whether it is a five-minute walk or an hour.
+            foreach (var leg in journey.Sections)
+                sb.AppendLine(
+                    $"      {(leg.IsWalk ? "(transfer)" : leg.Journey!.Label),-12} " +
+                    $"{leg.Departure?.Name} {leg.Departure?.Departure:HH\\:mm}" +
+                    $" -> {leg.Arrival?.Name} {leg.Arrival?.Arrival:HH\\:mm}");
+        }
+
+        // The planner reports no delay and no platform on Italian stops, so the
+        // first Italian train is looked up in the live sources. One extra call
+        // buys the single fact a traveller about to leave actually needs.
+        var firstLeg = journeys[0].Sections.FirstOrDefault(s => !s.IsWalk);
+        var number = firstLeg?.Journey?.Number;
+
+        if (!string.IsNullOrWhiteSpace(number) && when.Date == DateTimeOffset.UtcNow.Date)
+        {
+            var live = await trenord.GetTrainAsync(number, ct);
+            var train = live.FirstOrDefault()?.Journeys.FirstOrDefault()?.Train;
+
+            if (train?.Delay is { } delay)
+                sb.AppendLine($"\n  Live: {firstLeg!.Journey!.Label} is running {FormatDelay(delay)} " +
+                              $"({train.StatusText}).");
+        }
+
+        sb.AppendLine("\n  Times come from the Swiss open timetable, which carries no delays or " +
+                      "platforms for Italian stops. Use get_train or get_departures for those.");
+
+        // The planner knows its own network plus the cross-border lines, and
+        // little else of Italy. Asked for two Italian places it will happily
+        // route them through Switzerland — Como via Mendrisio in two hours,
+        // when a domestic train does it in forty minutes. Say so rather than
+        // letting a confident-looking itinerary stand.
+        if (RoutedThroughSwitzerland(journeys[0]))
+            sb.AppendLine("  This itinerary crosses into Switzerland. If both places are in Italy, " +
+                          "a domestic route is almost certainly faster — check get_departures or " +
+                          "find_connection, which read the Italian network directly.");
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// True when any leg calls at a Swiss stop. Judged by the stop names the
+    /// planner returns, which is crude but enough to flag the case that
+    /// matters: an Italian journey needlessly routed abroad.
+    /// </summary>
+    private static bool RoutedThroughSwitzerland(SwissConnection journey)
+    {
+        string[] swiss = ["MENDRISIO", "CHIASSO", "LUGANO", "BELLINZONA", "STABIO", "BALERNA", "CAPOLAGO"];
+        return journey.Sections.Any(s =>
+            swiss.Any(name =>
+                (s.Departure?.Name ?? "").ToUpperInvariant().Contains(name) ||
+                (s.Arrival?.Name ?? "").ToUpperInvariant().Contains(name)));
     }
 
     // ---------------------------------------------------------------- trains

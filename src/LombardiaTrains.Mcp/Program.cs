@@ -18,11 +18,14 @@ builder.Logging.AddConsole(options =>
 
 builder.Services.AddHttpClient<ViaggiaTrenoClient>();
 builder.Services.AddHttpClient<TrenordClient>();
+builder.Services.AddHttpClient<SwissTransportClient>();
+builder.Services.AddHttpClient<GtfsClient>();
 
 // Transient, not singleton: it depends on the typed HttpClients, which the
 // factory registers as transient so it can rotate their handlers. A singleton
 // holding them would keep the first handler alive for the life of the process.
 builder.Services.AddTransient<ConnectionFinder>();
+builder.Services.AddTransient<GtfsPlanner>();
 
 builder.Services
     .AddMcpServer()
