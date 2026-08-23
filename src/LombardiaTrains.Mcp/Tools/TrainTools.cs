@@ -29,7 +29,9 @@ public sealed class TrainTools(
     ViaggiaTrenoClient viaggiaTreno,
     TrenordClient trenord,
     SwissTransportClient swiss,
-    ConnectionFinder connections)
+    ConnectionFinder connections,
+    GtfsClient gtfs,
+    GtfsPlanner planner)
 {
     private const string Coverage =
         "This service covers the Italian rail network: RFI/Trenitalia plus Trenord and FNM. " +
@@ -147,11 +149,12 @@ public sealed class TrainTools(
     }
 
     [McpServerTool(Name = "find_journey")]
-    [Description("Full journey between two places, changes included, and across the Swiss border. " +
-                 "Use this rather than find_connection whenever the two places are not obviously on " +
-                 "the same line, or when either of them is in Switzerland. Plans from Swiss open " +
-                 "timetable data and adds the real delay of the first Italian train from the " +
-                 "Italian live sources, which the planner itself does not carry.")]
+    [Description("Full journey between two places, changes included. Use this rather than " +
+                 "find_connection whenever the two places are not obviously on the same line, or " +
+                 "when a change may be needed. Plans from the Lombardy regional timetable, which " +
+                 "reaches the Swiss stations on the cross-border lines, and falls back to Swiss " +
+                 "open data for anywhere it does not cover. Returns timetabled times: pair it " +
+                 "with get_departures or get_train for delays, platforms and cancellations.")]
     public async Task<string> FindJourneyAsync(
         [Description("Origin, as a place or station name: 'Milano Centrale', 'Malpensa', 'Como'.")]
         string from,
@@ -164,6 +167,17 @@ public sealed class TrainTools(
         CancellationToken ct = default)
     {
         var when = ParseWhen(at);
+
+        // The regional timetable is asked first. It is the only source here that
+        // covers the Lombardy network completely, and its stop codes are the ones
+        // the live tools already use, so an itinerary it returns can be followed
+        // up train by train. It answers with null when it cannot help — a place
+        // outside the region, or a day with nothing left — and the Swiss planner,
+        // which reaches much further but knows Italy only near the border, takes
+        // over from there.
+        var regional = await PlanFromTimetableAsync(from, to, when, limit, ct);
+        if (regional is not null) return regional;
+
         var journeys = await swiss.GetConnectionsAsync(from, to, when, Math.Clamp(limit, 1, 6), ct);
 
         if (journeys.Count == 0)
@@ -225,6 +239,84 @@ public sealed class TrainTools(
                           "a domestic route is almost certainly faster — check get_departures or " +
                           "find_connection, which read the Italian network directly.");
 
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Plans from the regional timetable, or returns null to say it cannot: the
+    /// caller then falls back to a planner with wider reach.
+    ///
+    /// Null means "ask someone else". A message means the question itself needs
+    /// answering first — an ambiguous name, or two names for one station — and
+    /// those are reported rather than guessed at.
+    /// </summary>
+    private async Task<string?> PlanFromTimetableAsync(
+        string from, string to, DateTimeOffset when, int limit, CancellationToken ct)
+    {
+        var origin = await gtfs.FindStopsAsync(from, ct);
+        if (origin.Count == 0) return null;
+
+        var destination = await gtfs.FindStopsAsync(to, ct);
+        if (destination.Count == 0) return null;
+
+        if (origin.Count > 1) return Ambiguous(from, origin);
+        if (destination.Count > 1) return Ambiguous(to, destination);
+
+        if (string.Equals(origin[0].Id, destination[0].Id, StringComparison.OrdinalIgnoreCase))
+            return $"'{from}' and '{to}' are the same station ({origin[0].Name}). " +
+                   "Name two different places to plan a journey between them.";
+
+        var journeys = await planner.PlanAsync(
+            origin[0].Id, destination[0].Id, DateOnly.FromDateTime(when.DateTime),
+            when.TimeOfDay, Math.Clamp(limit, 1, 6), ct);
+
+        if (journeys.Count == 0) return null;
+
+        var sb = new StringBuilder(
+            $"{origin[0].Name} -> {destination[0].Name}, from {Stamp(when)}\n");
+
+        foreach (var journey in journeys)
+        {
+            var changes = journey.Changes == 0 ? "direct" :
+                journey.Changes == 1 ? "1 change" : $"{journey.Changes} changes";
+            var d = journey.DurationMinutes;
+            var length = d < 60 ? $"{d}min" : $"{d / 60}h{d % 60:00}";
+
+            sb.AppendLine(
+                $"\n  {journey.Departure:hh\\:mm} -> {journey.Arrival:hh\\:mm}   " +
+                $"{length}, {changes}");
+
+            for (var i = 0; i < journey.Legs.Count; i++)
+            {
+                var leg = journey.Legs[i];
+                sb.AppendLine(
+                    $"      {leg.Route,-8} {Trim(leg.FromStop, 24),-24} {leg.Departure:hh\\:mm}" +
+                    $" -> {Trim(leg.ToStop, 24),-24} {leg.Arrival:hh\\:mm}");
+
+                if (i + 1 < journey.Legs.Count)
+                {
+                    var wait = (int)(journey.Legs[i + 1].Departure - leg.Arrival).TotalMinutes;
+                    sb.AppendLine($"      {"",-8} change at {leg.ToStop}, {wait} min");
+                }
+            }
+        }
+
+        sb.AppendLine(
+            "\n  These are timetabled times from the regional feed: no delays, no platforms, " +
+            "and no account of a train cancelled today. Check the trains themselves with " +
+            "get_departures or get_train before relying on a tight change.");
+
+        return sb.ToString();
+    }
+
+    private static string Ambiguous(string input, IReadOnlyList<GtfsStopMatch> matches)
+    {
+        var sb = new StringBuilder(
+            $"'{input}' matches {matches.Count} stations in the regional timetable, which are " +
+            "different places with different trains. Ask which one is meant:\n");
+        foreach (var m in matches.Take(15))
+            sb.AppendLine($"  {m.Id,-8} {m.Name}");
+        if (matches.Count > 15) sb.AppendLine($"  ... and {matches.Count - 15} more");
         return sb.ToString();
     }
 

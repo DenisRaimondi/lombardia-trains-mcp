@@ -126,6 +126,55 @@ public sealed class GtfsClient
         return services;
     }
 
+    /// <summary>
+    /// Stops whose name matches, exact matches first.
+    ///
+    /// Containment alone picks the wrong station. A name that is a prefix of
+    /// another one — and on this network several are — matches both, and the
+    /// longer one can come first, so a request for one town returns the times
+    /// of a different station in it. An exact match therefore settles the
+    /// question before containment is considered at all.
+    /// </summary>
+    public async Task<IReadOnlyList<GtfsStopMatch>> FindStopsAsync(
+        string query, CancellationToken ct = default)
+    {
+        var timetable = await GetTimetableAsync(ct);
+        var needle = query.Trim();
+
+        var exact = timetable.StopNames
+            .Where(kv => string.Equals(kv.Value.Trim(), needle, StringComparison.OrdinalIgnoreCase))
+            .Select(kv => new GtfsStopMatch(kv.Key, kv.Value))
+            .ToList();
+
+        if (exact.Count > 0) return exact;
+
+        return timetable.StopNames
+            .Where(kv => StartsAWord(kv.Value, needle))
+            .Select(kv => new GtfsStopMatch(kv.Key, kv.Value))
+            .OrderBy(m => m.Name.Length)
+            .ThenBy(m => m.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>
+    /// True when the name contains the query starting at a word boundary.
+    ///
+    /// Plain containment reaches inside words and returns places that merely
+    /// share a run of letters: searching for one town brings back two villages
+    /// whose names happen to end in the same syllable. Requiring the match to
+    /// begin a word keeps a partial name useful without that.
+    /// </summary>
+    private static bool StartsAWord(string name, string needle)
+    {
+        var at = 0;
+        while ((at = name.IndexOf(needle, at, StringComparison.OrdinalIgnoreCase)) >= 0)
+        {
+            if (at == 0 || !char.IsLetter(name[at - 1])) return true;
+            at++;
+        }
+        return false;
+    }
+
     /// <summary>The service number the two files agree on.</summary>
     public static string? ServiceKey(string? serviceId)
     {
@@ -155,6 +204,8 @@ public sealed class GtfsClient
         return all;
     }
 }
+
+public sealed record GtfsStopMatch(string Id, string Name);
 
 public sealed record GtfsTimetable(
     IReadOnlyList<GtfsStopTime> StopTimes,
