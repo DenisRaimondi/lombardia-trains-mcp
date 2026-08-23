@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -42,6 +43,43 @@ public sealed class ViaggiaTrenoClient
         var stations = await SafeGetAsync<List<VtStation>>(url, ct);
         return stations ?? [];
     }
+
+    /// <summary>
+    /// Resolves a station code back to its name. `cercaStazione` only searches
+    /// by name, so this goes the other way in two hops: `regione` gives the
+    /// region the station belongs to, and `dettaglioStazione` then returns the
+    /// record, whose name lives under `localita.nomeLungo`.
+    ///
+    /// Station names do not change, so answers are cached for the lifetime of
+    /// the process. Without this a caller passing a code has no name to match
+    /// against a train's stop list, and the code itself never appears there.
+    /// </summary>
+    public async Task<string?> GetStationNameAsync(string code, CancellationToken ct = default)
+    {
+        var key = code.ToUpperInvariant();
+        if (StationNames.TryGetValue(key, out var cached)) return cached;
+
+        string? name = null;
+        try
+        {
+            var region = (await _http.GetStringAsync($"regione/{key}", ct)).Trim();
+            if (region.Length > 0)
+            {
+                var detail = await SafeGetAsync<VtStationDetail>($"dettaglioStazione/{key}/{region}", ct);
+                name = detail?.Locality?.LongName?.Trim();
+            }
+        }
+        catch (HttpRequestException)
+        {
+            // Leave it unresolved rather than failing the caller: the lookup is
+            // an improvement on the answer, not a precondition for it.
+        }
+
+        StationNames[key] = name;
+        return name;
+    }
+
+    private static readonly ConcurrentDictionary<string, string?> StationNames = new();
 
     public Task<IReadOnlyList<VtBoardRow>> GetDeparturesAsync(
         string stationCode, DateTimeOffset when, CancellationToken ct = default) =>

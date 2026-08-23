@@ -1,4 +1,5 @@
 using LombardiaTrains.Mcp.Clients;
+using LombardiaTrains.Mcp.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -17,6 +18,11 @@ builder.Logging.AddConsole(options =>
 
 builder.Services.AddHttpClient<ViaggiaTrenoClient>();
 builder.Services.AddHttpClient<TrenordClient>();
+
+// Transient, not singleton: it depends on the typed HttpClients, which the
+// factory registers as transient so it can rotate their handlers. A singleton
+// holding them would keep the first handler alive for the life of the process.
+builder.Services.AddTransient<ConnectionFinder>();
 
 builder.Services
     .AddMcpServer()

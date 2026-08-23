@@ -86,3 +86,20 @@ public sealed class VtStop
         new[] { ActualArrPlatform, PlannedArrPlatform, PlannedDepPlatform }
             .FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? "-";
 }
+
+/// <summary>
+/// Shape of `dettaglioStazione`. The station's name is not at the top level:
+/// it sits under `localita`, while `nomeLungo` on the root object comes back
+/// null. Only the fields actually used are mapped.
+/// </summary>
+public sealed class VtStationDetail
+{
+    [JsonPropertyName("codStazione")] public string? Code { get; init; }
+    [JsonPropertyName("localita")] public VtLocality? Locality { get; init; }
+}
+
+public sealed class VtLocality
+{
+    [JsonPropertyName("nomeLungo")] public string? LongName { get; init; }
+    [JsonPropertyName("nomeBreve")] public string? ShortName { get; init; }
+}

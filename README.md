@@ -43,14 +43,34 @@ claude mcp add lombardia-trains -- lombardia-trains-mcp
 
 | Tool | What it answers |
 |---|---|
+| `now` | "what time and day is it in Italy?" |
 | `search_station` | "what is the station code for Castellanza?" |
-| `get_departures` | "what is leaving Milano Cadorna in the next hour?" |
+| `get_departures` | "what is leaving Milano Cadorna on Saturday morning?" |
 | `get_arrivals` | "when does the train from Varese get in?" |
+| `find_connection` | "which direct trains go from Castellanza to Milano Cadorna?" |
 | `get_train` | "where is train 4307 right now, and how late is it?" |
 
-Station arguments accept either a code (`S01136`) or a name (`castellanza`) —
-names are resolved automatically, so the model does not have to chain two calls
-to answer a simple question.
+Station arguments take either a code (`S01136`) or a name (`castellanza`), and
+times take either `HH:mm` for today or ISO `2026-08-29T09:00` for another day.
+
+Three behaviours exist because the caller is a language model rather than a
+person, and each of them prevents a confident wrong answer:
+
+- **`now` exists at all** because a model has no reliable idea of the date in
+  Rome, and every relative question — "tonight", "Saturday" — needs one before
+  any other tool can be called.
+- **Ambiguous names are never resolved silently.** "Milano" matches twenty-six
+  stations and "Busto Arsizio" matches two, on different networks with entirely
+  different trains. The tools return the list and ask, rather than picking the
+  first and sounding certain.
+- **Unknown places say where coverage ends.** Asking for Lugano returns an
+  explanation of what the service covers, so the model can decline instead of
+  inventing a train to Switzerland.
+
+`find_connection` finds **direct** trains only. It reads live departure boards
+and each candidate train's stop list rather than a timetable, so a journey
+needing a change is not found — and the answer says so instead of implying none
+exists.
 
 ## The part worth reading
 
