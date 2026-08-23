@@ -2,8 +2,9 @@
 
 An MCP server that answers questions about Lombardy trains: departure and
 arrival boards, live delays, platforms, stop-by-stop progress, cancellations
-and crowding. It reads the public ViaggiaTreno (RFI/Trenitalia) and Trenord
-APIs. No API key, no account, no scraping.
+and crowding — and plans journeys with a change, from the regional timetable
+Regione Lombardia publishes as open data. It reads the public ViaggiaTreno
+(RFI/Trenitalia) and Trenord APIs. No API key, no account, no scraping.
 
 ```
 > is the next train to Malpensa on time?
@@ -48,6 +49,7 @@ claude mcp add lombardia-trains -- lombardia-trains-mcp
 | `get_departures` | "what is leaving Milano Cadorna on Saturday morning?" |
 | `get_arrivals` | "when does the train from Varese get in?" |
 | `find_connection` | "which direct trains go from Milano Cadorna to Como?" |
+| `find_journey` | "how do I get from Castellanza to Como Lago on Monday morning?" |
 | `get_train` | "where is train 4307 right now, and how late is it?" |
 
 Station arguments take either a code (`S01700`) or a name (`milano centrale`), and
@@ -67,10 +69,24 @@ person, and each of them prevents a confident wrong answer:
   explanation of what the service covers, so the model can decline instead of
   inventing a train to Switzerland.
 
-`find_connection` finds **direct** trains only. It reads live departure boards
-and each candidate train's stop list rather than a timetable, so a journey
-needing a change is not found — and the answer says so instead of implying none
-exists.
+`find_connection` finds **direct** trains only, and says so. It reads live
+departure boards and each candidate train's stop list rather than a timetable,
+so it carries delays and platforms but cannot compose a change.
+
+`find_journey` composes one. It plans from the regional timetable, falls back to
+Swiss open data for anywhere that timetable does not reach, and returns
+scheduled times with no delays in them — the two tools answer different halves
+of the same question and are meant to be used together.
+
+Journeys are ranked by **arrival**, not departure. Someone asking how to get
+somewhere wants to be there soonest, and ranking by departure puts a train that
+leaves four minutes earlier and arrives forty minutes later at the top of the
+list.
+
+Only one change is searched for. Two multiply both the search space and the
+ways to be quietly wrong, and on this network almost everything worth reaching
+is reachable with one — so the limit is stated rather than hidden behind an
+incomplete search.
 
 ## The part worth reading
 
@@ -138,11 +154,46 @@ Italian system and the endpoint silently returns nothing.
   nothing to report, which makes a naive deserializer throw.
 - `train_operator` uses `$:$` as its separator, literally.
 
+### The published timetable is not quite GTFS
+
+Regione Lombardia publishes the regional rail timetable under CC0, refreshed
+daily. Its `stop_id`s are the same codes ViaggiaTreno uses — `S01136` is the
+same station in both — so a planned journey joins to live delays and platforms
+with no translation table. That is the good news.
+
+Three things about the published form are not GTFS, and each one fails quietly:
+
+- **Times carry a placeholder date.** `1899-12-31T06:05:00.000` means 06:05.
+  GTFS expresses a service running past midnight as `24:05`; this form cannot,
+  so it comes back as `00:05` and a train that left at 23:50 appears to arrive
+  eighteen hours earlier than it departed. Read literally that makes 00:05 the
+  earliest arrival anywhere the last service reaches, and a search for the
+  earliest arrival then rejects every real morning connection. Each trip's
+  clock is made monotonic before anything is computed from it.
+- **`calendar` lost its columns.** Only `service_id` survived publication: the
+  weekday flags and the validity dates are gone, so the file cannot be used for
+  what it is for. It does not matter, because `calendar_dates` lists every
+  service-date pair explicitly rather than as exceptions to a weekly pattern.
+- **The two files name services differently.** `trips` writes
+  `124865-0b0cb949`, `calendar_dates` writes `124865-2026-08-21-2026-08-30`:
+  the same service, suffixed with a hash in one export and with its validity
+  period in the other. Joining on the full string matches nothing at all — not
+  an error, just an empty result — so both sides are cut back to the number
+  they share.
+
+Dates in `calendar_dates` are strings shaped `20260829`. Querying for
+`2026-08-29` returns zero rows rather than complaining.
+
 ### Coverage
 
 Trenord covers its own fleet, FNM included. ViaggiaTreno covers the RFI network
 and, unpredictably, part of FNM. So `get_train` asks Trenord first and falls
 back to ViaggiaTreno, while the station boards only exist on ViaggiaTreno.
+
+The regional timetable reaches along the cross-border lines, so stations beyond
+the frontier are planned domestically rather than as an international journey.
+The live APIs stop at the border, and a leg past it therefore carries scheduled
+times only.
 
 ## Development
 
@@ -162,6 +213,10 @@ Requires the .NET 10 SDK.
 ## Limits
 
 - Read-only. No booking, no ticketing, no account access.
+- Journeys with more than one change are not searched for.
+- Planned times are timetabled times. A train cancelled this morning is still
+  in the plan; pair `find_journey` with `get_departures` or `get_train` before
+  relying on a tight change.
 - ViaggiaTreno is served over plain HTTP and is occasionally unavailable.
 - Both APIs are undocumented and can change without notice. If a test starts
   failing, that is the intended alarm.
