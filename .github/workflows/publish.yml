@@ -1,0 +1,56 @@
+# Publishes the package to NuGet without a stored secret.
+#
+# nuget.org caps new API keys at 30 days and expires existing ones outright, so
+# the key here is not stored anywhere: the job asks GitHub for a short-lived
+# OIDC token, nuget.org checks it against a trust policy naming this repository
+# and this file, and hands back an API key that lasts an hour. Nothing to
+# rotate, and nothing to leak.
+#
+# The trust policy on nuget.org must name this file — publish.yml — by name.
+# Renaming it silently breaks publishing.
+name: publish
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write        # lets this job ask GitHub for the OIDC token
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build
+        run: dotnet build -c Release --nologo
+
+      # The tests talk to the live railway APIs on purpose, which is right for
+      # catching an upstream change and wrong as a release gate: an outage at
+      # Trenord is not a reason a release cannot go out. They run on their own
+      # workflow instead.
+
+      - name: Pack
+        run: dotnet pack src/LombardiaTrains.Mcp -c Release -o artifacts --nologo
+
+      # Asked for immediately before the push: the key expires in an hour.
+      - name: NuGet login
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Push
+        run: >
+          dotnet nuget push artifacts/*.nupkg
+          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate

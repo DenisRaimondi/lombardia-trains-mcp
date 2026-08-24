@@ -1,0 +1,24 @@
+# Builds and runs the tests against the live railway APIs.
+#
+# Those tests exist to notice when an upstream payload changes, which means they
+# can fail for reasons that have nothing to do with a commit. That is the point,
+# and it is also why they do not gate a release.
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    - cron: '0 6 * * 1'      # Monday morning: catch upstream drift, not commits
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet build -c Release --nologo
+      - run: dotnet test -c Release --nologo
