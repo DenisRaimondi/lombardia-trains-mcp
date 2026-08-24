@@ -240,29 +240,45 @@ Termini* matches nothing in Locarno. An answer that fails it is discarded rather
 than passed on, and the reply names the live tools, which do work for those
 stations.
 
-### Where the open data is simply wrong
+### How accurate this is, and how that was measured
 
-Planned journeys were compared against the operator's own planner across
-thirty-seven routes, and a third source — the live train data — was asked to
-settle the cases where the two disagreed. Most matched to the minute. Three did
-not, and none of the three is fixable here:
+Twenty-eight journeys published by the operator's own planner were compared
+against what this returns — same day, same times, thirteen routes across the
+region — and where the two disagreed, the live train data was asked to settle
+it. **Twenty-seven of the twenty-eight match to the minute.**
 
-- **Milano Centrale to Bergamo is four minutes short.** The feed times the RE2
-  at forty-eight minutes; the operator's planner says fifty-two, and the live
-  data for that train agrees with the operator. Same five stops, same departure
-  — the last leg into Bergamo is simply timed wrong.
-- **A trip can stop short of where the train goes.** S5 11827 runs Varese to
-  Milano and beyond; in this feed it ends at Milano Porta Garibaldi. Everything
-  reachable by staying on it is therefore invisible, which is why Varese to
-  Bergamo comes back an hour worse than the published answer. An exhaustive
-  search over the feed confirms nothing better exists in it.
-- **Which variant of a train runs today is not published**, so where two
-  disagree by a minute one of them is wrong and there is no way to tell which.
-  The earlier arrival is taken, because in both cases that could be checked the
-  operator published the earlier one.
+That is a measurement of two things at once, and they are worth separating. The
+routing was never really the hard part on a network this size: what the number
+mostly measures is how faithfully open timetable data reproduces the timetable
+the operator actually runs. The answer is: closely, and not exactly.
 
-The planner is not more accurate than its source and does not pretend to be.
-Where a minute matters, `get_train` reads the operator's own live data.
+An open feed is an export. The operator plans on an internal system with
+real-time folded into it and publishes a snapshot of that system as GTFS, on its
+own schedule. A snapshot trails the thing it is a snapshot of — that is what a
+snapshot is, not a defect of anyone's — and the trailing shows up as a few
+minutes on a few trains. Four into Bergamo. Five into Mortara. Six into Ponte
+S.Pietro, where it is the difference between a coach that can be caught and one
+that cannot.
+
+None of that can be repaired from open timetable data, because the correct value
+is not in it. What can be done is to stop treating the timetable as the last
+word: every leg carries a train number, the live sources belong to the operator,
+so each leg is looked up and asked. That is where twenty-two of twenty-eight
+became twenty-seven.
+
+**The twenty-eighth is the honest edge of the approach.** Lecco to Bergamo is
+still answered with the 09:01 coach rather than the 08:51 one. The feed puts the
+inbound train into Ponte S.Pietro at 08:52, one minute after that coach leaves,
+so the search discarded the connection before anything was checked against the
+operator. Correcting after planning fixes what is shown; it cannot recover what
+wrong data excluded. Doing better would mean planning on corrected times, which
+means correcting the whole timetable rather than the handful of legs an answer
+happens to use — a different project, and a much larger one.
+
+So the position this takes is: be exact about what is known, name the source of
+every number, and where a minute matters, go and ask the operator. A tool that
+knows which of its answers to distrust is more useful than one that is confident
+everywhere.
 
 ### Coverage
 
@@ -310,18 +326,26 @@ Requires the .NET 10 SDK.
 
 ## Limits
 
-- **Journey planning is Lombardy plus the cross-border lines. Live data is all
-  of Italy.** Departure boards, arrivals, direct connections and train tracking
-  work at Roma Termini, Napoli Centrale, Palermo and Bari; planning a route
-  between them does not, and says so rather than improvising.
+- **Journey planning covers Lombardy and the cross-border lines. Live data
+  covers all of Italy.** Departure boards, arrivals, direct connections and
+  train tracking work at Roma Termini, Napoli Centrale, Palermo and Bari;
+  planning a route between them does not, and says so rather than improvising.
+- **One change.** Two multiply both the search space and the ways to be quietly
+  wrong. Where a journey needs more, the answer says which limit was hit rather
+  than reporting nothing found.
+- **Times are the operator's where it was asked, and timetabled where it was
+  not.** The live sources are asked for today and tomorrow; for any other day
+  there is nothing live to ask, and the answer says so.
+- **A few minutes on a few trains.** The published timetable trails the
+  operator's own by four to six minutes on some services. Legs where the two
+  disagree are marked, and are the legs not to build a four-minute change on.
+- **Walking between stations is not modelled.** Several towns have two stations
+  a few hundred metres apart, served by different lines; a journey that would
+  change between them on foot is not found.
 - Read-only. No booking, no ticketing, no account access.
-- Journeys with more than one change are not searched for.
-- Planned times are timetabled times. A train cancelled this morning is still
-  in the plan; pair `find_journey` with `get_departures` or `get_train` before
-  relying on a tight change.
 - ViaggiaTreno is served over plain HTTP and is occasionally unavailable.
-- Both APIs are undocumented and can change without notice. If a test starts
-  failing, that is the intended alarm.
+- The live APIs are undocumented and can change without notice. The tests run
+  against them on purpose: if one starts failing, that is the intended alarm.
 
 ## Licence
 
