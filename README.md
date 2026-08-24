@@ -202,6 +202,27 @@ Two more, found by planning real journeys and comparing the answers:
   platform, does not appear in the live train data, and a nine-minute connection
   onto one is a different proposition. Legs on it are marked `[BUS]`.
 
+### The planner behind the border does not know it is lost
+
+Where the regional timetable does not reach, journeys fall back to Swiss open
+data. That planner covers Switzerland and reaches into Italy near the border. It
+does not cover the rest of the country — and asked about it, it does not say so.
+It matches the name against its own index and answers about whatever it found.
+
+Asked to plan Milano Centrale to **Roma Termini**, it returned a confident,
+correctly formatted, two-hour itinerary to *LaCLINIQUE of Switzerland, Locarno,
+Via Bossi 2*. Roma Termini to Napoli Centrale became a four-change, four-hour
+journey ending at a street address in Lucens, canton Vaud.
+
+Nationality is not the test that catches this: the Swiss index holds Zurich, and
+ViaggiaTreno holds Zurich Altstetten, so "are both stations Italian" rejects a
+real journey to Zurich while letting the clinic through. The test that works is
+whether the answer is about the places that were asked for — one substantial
+word in common, accents folded, so *Zurich* matches *Zürich HB* and *Roma
+Termini* matches nothing in Locarno. An answer that fails it is discarded rather
+than passed on, and the reply names the live tools, which do work for those
+stations.
+
 ### Coverage
 
 Trenord covers its own fleet, FNM included. ViaggiaTreno covers the RFI network
@@ -248,6 +269,10 @@ Requires the .NET 10 SDK.
 
 ## Limits
 
+- **Journey planning is Lombardy plus the cross-border lines. Live data is all
+  of Italy.** Departure boards, arrivals, direct connections and train tracking
+  work at Roma Termini, Napoli Centrale, Palermo and Bari; planning a route
+  between them does not, and says so rather than improvising.
 - Read-only. No booking, no ticketing, no account access.
 - Journeys with more than one change are not searched for.
 - Planned times are timetabled times. A train cancelled this morning is still

@@ -33,6 +33,19 @@ public sealed class TrainTools(
     GtfsClient gtfs,
     GtfsPlanner planner)
 {
+    /// <summary>
+    /// What to say when a journey cannot be planned. The tools that do work
+    /// across the whole Italian network are named, because "outside coverage"
+    /// on its own reads as "this server cannot help with these stations", and
+    /// for live departures and delays it can.
+    /// </summary>
+    private const string OutsideThePlan =
+        "Journey planning covers the Lombardy regional network and the lines across the Swiss " +
+        "border. Elsewhere in Italy there is no timetable here to plan from — but the live data " +
+        "still works everywhere: get_departures and get_arrivals for any station, find_connection " +
+        "for a direct train between two of them, and get_train for the position and delay of any " +
+        "train in the country.";
+
     private const string Coverage =
         "This service covers the Italian rail network: RFI/Trenitalia plus Trenord and FNM. " +
         "Cross-border trains appear as far as the frontier (Stabio, Chiasso, Domodossola), " +
@@ -178,11 +191,28 @@ public sealed class TrainTools(
         var regional = await PlanFromTimetableAsync(from, to, when, limit, ct);
         if (regional is not null) return regional;
 
+        // Beyond the regional timetable there is only a planner built for
+        // Switzerland, which reaches into Italy near the border and no further.
+        // Asked about anywhere else it does not decline: it resolves the name to
+        // the closest thing in its own index and answers about that instead.
+        // Asked to plan Milano Centrale to Roma Termini it returned a confident
+        // two-hour itinerary to a beauty clinic in Locarno.
+        //
+        // Whether a place is Italian is not the test — that index holds Zurich
+        // and ViaggiaTreno holds Zurich Altstetten, so nationality separates
+        // nothing here. What separates them is whether the answer is about the
+        // places that were asked for.
         var journeys = await swiss.GetConnectionsAsync(from, to, when, Math.Clamp(limit, 1, 6), ct);
 
         if (journeys.Count == 0)
-            return $"No journey found from '{from}' to '{to}' around {Stamp(when)}. " +
-                   "Check the spelling of both places, or try a nearby major station.";
+            return $"No journey found from '{from}' to '{to}' around {Stamp(when)}.\n" +
+                   OutsideThePlan;
+
+        if (!Resembles(from, journeys[0].From?.Name) || !Resembles(to, journeys[0].To?.Name))
+            return $"Cannot plan {from} to {to}. The planner matched them to " +
+                   $"'{journeys[0].From?.Name}' and '{journeys[0].To?.Name}', which is not what " +
+                   $"was asked for, so its answer has been discarded rather than passed on.\n" +
+                   OutsideThePlan;
 
         var sb = new StringBuilder($"{from} -> {to}, from {Stamp(when)}\n");
 
@@ -317,6 +347,36 @@ public sealed class TrainTools(
                 "and takes longer than the timetable suggests when the road is busy.");
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Whether a name the planner resolved to is recognisably the one asked for.
+    ///
+    /// One substantial word in common is enough — "Zurich" against "Zürich HB",
+    /// "Lugano" against "Lugano, Piazza Stazione" — while an answer about a
+    /// different place shares nothing. Accents are folded because the request
+    /// and the index rarely spell them the same way.
+    /// </summary>
+    private static bool Resembles(string requested, string? resolved)
+    {
+        if (string.IsNullOrWhiteSpace(resolved)) return false;
+
+        var wanted = Fold(requested).Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                                    .Where(w => w.Length >= 4).ToList();
+        if (wanted.Count == 0) return true;   // nothing substantial to check against
+
+        var got = Fold(resolved);
+        return wanted.Any(w => got.Contains(w, StringComparison.Ordinal));
+    }
+
+    private static string Fold(string text)
+    {
+        var decomposed = text.Normalize(NormalizationForm.FormD);
+        var kept = decomposed.Where(c =>
+            CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark);
+
+        return new string(kept.Select(c => char.IsLetterOrDigit(c) ? char.ToLowerInvariant(c) : ' ')
+                              .ToArray());
     }
 
     private static string Ambiguous(string input, IReadOnlyList<GtfsStopMatch> matches)

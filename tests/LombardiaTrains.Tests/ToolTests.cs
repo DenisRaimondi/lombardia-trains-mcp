@@ -174,6 +174,52 @@ public class ToolTests(ITestOutputHelper output)
         Assert.Contains("same station", text);
     }
 
+    [Theory]
+    [InlineData("Milano Centrale", "Roma Termini")]
+    [InlineData("Roma Termini", "Napoli Centrale")]
+    [InlineData("Torino Porta Nuova", "Genova Piazza Principe")]
+    public async Task A_journey_across_Italy_is_declined_rather_than_answered_about_Switzerland(
+        string from, string to)
+    {
+        // The planner behind the fallback covers Switzerland and reaches into
+        // Italy near the border. Asked about anywhere else it does not decline:
+        // it resolves the name to the nearest thing in its own index and answers
+        // about that. "Roma Termini" became a beauty clinic in Locarno, with a
+        // two-hour itinerary to reach it.
+        var text = await NewTools().FindJourneyAsync(from, to, Tomorrow("08:00"));
+        Show($"find_journey, {from} -> {to}", text);
+
+        // The refusal names what it discarded, on purpose, so the message may
+        // well mention Locarno. What must not be there is an itinerary: no
+        // legs, no times, nothing that could be read as an answer.
+        // Echoing back the time that was asked for is fine. An itinerary is
+        // not: every leg carries a departure and an arrival, so no line may
+        // hold two clock times, and none may hold an arrow.
+        Assert.DoesNotContain("->", text);
+        Assert.All(text.Split('\n'), line =>
+            Assert.True(System.Text.RegularExpressions.Regex.Matches(line, @"\d\d:\d\d").Count < 2,
+                $"this reads as a leg of a journey: {line}"));
+
+        // And declining is not enough on its own: for these two stations the
+        // live tools work perfectly well, and saying only "not covered" reads
+        // as though nothing here can help.
+        Assert.Contains("get_departures", text);
+        Assert.Contains("get_train", text);
+    }
+
+    [Fact]
+    public async Task Guarding_the_fallback_does_not_close_the_border()
+    {
+        // The guard cannot be "is it Italian": the Swiss index holds Zurich and
+        // ViaggiaTreno holds Zurich Altstetten. What it checks is whether the
+        // answer is about the places that were asked for.
+        var text = await NewTools().FindJourneyAsync("Milano Centrale", "Zurich", Tomorrow("08:00"));
+        Show("find_journey, Milano -> Zurich", text);
+
+        Assert.DoesNotContain("Cannot plan", text);
+        Assert.Contains("rich", text);          // Zurich, Zürich, however spelled
+    }
+
     // ------------------------------------------------------------ direct-only
 
     [Fact]
