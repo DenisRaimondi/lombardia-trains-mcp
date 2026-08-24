@@ -20,11 +20,17 @@ public sealed record PlannedJourney(IReadOnlyList<PlannedLeg> Legs)
     public bool HasBus => Legs.Any(l => l.IsBus);
 
     /// <summary>
-    /// The journey as the services that make it up, ignoring which published
-    /// variant of each one this happens to be.
+    /// The journey as a traveller can tell it apart from another one: where
+    /// each leg starts and ends, and when.
+    ///
+    /// Keyed on the service number instead, two coaches leaving Bozzolo at the
+    /// same minute for the same town came back as two options, distinguishable
+    /// only by six minutes of arrival — a choice nobody standing at the stop
+    /// could act on.
     /// </summary>
     internal string Signature =>
-        string.Join("|", Legs.Select(l => $"{l.Trip}:{l.FromStop}>{l.ToStop}"));
+        string.Join("|", Legs.Select(l =>
+            $"{l.FromStop}@{l.Departure:hh\\:mm}>{l.ToStop}"));
 }
 
 /// <summary>

@@ -300,7 +300,22 @@ public sealed class TrainTools(
             origin[0].Id, destination[0].Id, DateOnly.FromDateTime(when.DateTime),
             when.TimeOfDay, Math.Clamp(limit, 1, 6), ct);
 
-        if (journeys.Count == 0) return null;
+        // Both places are in the regional timetable, so this is the source that
+        // should answer and there is nothing better to defer to. Falling back
+        // from here sends two Lombardy stations to a planner built for
+        // Switzerland, which answers rather than declining: Chiavenna to Como
+        // came back as seven hours through St. Moritz and Bellinzona.
+        //
+        // The honest answer is which limit was hit. "Not covered" would be
+        // false — both are covered — and the caller would stop asking instead
+        // of splitting the journey at an intermediate station.
+        if (journeys.Count == 0)
+            return $"No journey from {origin[0].Name} to {destination[0].Name} on " +
+                   $"{Stamp(when)} with at most one change.\n" +
+                   "Both stations are in the regional timetable, so this is not a gap in " +
+                   "coverage: journeys needing two or more changes are not searched for. " +
+                   "Asking again in two halves, through a station on the way, will find one " +
+                   "if it exists.";
 
         var sb = new StringBuilder(
             $"{origin[0].Name} -> {destination[0].Name}, from {Stamp(when)}\n");

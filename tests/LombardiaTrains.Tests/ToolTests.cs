@@ -220,6 +220,30 @@ public class ToolTests(ITestOutputHelper output)
         Assert.Contains("rich", text);          // Zurich, Zürich, however spelled
     }
 
+    [Theory]
+    [InlineData("Chiavenna", "Como Lago")]
+    [InlineData("Como Lago", "Brescia")]
+    [InlineData("Mantova", "Varese")]
+    public async Task Two_stations_in_the_region_are_never_routed_through_Switzerland(
+        string from, string to)
+    {
+        // These need two changes, which is past where the planner stops. When
+        // that made it defer to the fallback, two Lombardy stations went to a
+        // planner built for Switzerland — Chiavenna to Como came back as seven
+        // hours through St. Moritz and Bellinzona.
+        var text = await NewTools().FindJourneyAsync(from, to, Tomorrow("08:00"));
+        Show($"find_journey, {from} -> {to}", text);
+
+        Assert.DoesNotContain("Moritz", text);
+        Assert.DoesNotContain("Bellinzona", text);
+
+        // And it must say which limit was hit. "Not covered" would be false —
+        // both stations are in the timetable — and a caller told that stops
+        // asking instead of splitting the journey.
+        Assert.Contains("one change", text);
+        Assert.Contains("not a gap in coverage", text);
+    }
+
     // ------------------------------------------------------------ direct-only
 
     [Fact]
