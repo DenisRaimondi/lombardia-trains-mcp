@@ -202,11 +202,29 @@ dotnet build
 dotnet test
 ```
 
-The tests run against the live endpoints on purpose. Mocking them would only
-prove that the mocks match what was assumed, and every bug worth catching here
-came from the real payload disagreeing with the assumption — including the
-two-header rule above, which was found by a test contradicting the
-documentation it was written from.
+Fifty tests, on three levels:
+
+- **the clients**, against the live endpoints — the header rule, the timestamp
+  formats, the empty body where an empty array was expected;
+- **the tools**, called the way a model calls them, asserting on what the answer
+  claims rather than on how it is worded: an ambiguous name comes back as a
+  question, an unknown place says where coverage ends, a planned journey says
+  its times carry no delays;
+- **the server**, started as a process and spoken to in JSON-RPC — the
+  handshake, the advertised tools and their schemas, and the rule that nothing
+  but protocol may reach stdout.
+
+Nothing asserts a departure time. The timetable is republished daily, and a test
+written around today's 08:24 fails next month for no reason, which teaches
+whoever reads it to ignore the suite. What is asserted are the properties that
+hold whatever the timetable says: time moves forward, a change is long enough to
+make, the journey starts and ends where it was asked to, results are ordered the
+way the tool claims. Those are also the ones that were actually broken.
+
+They run against the live endpoints on purpose. Mocking would only prove the
+mocks match what was assumed, and every bug worth catching here came from the
+real payload disagreeing with the assumption — including the two-header rule
+above, found by a test contradicting the documentation it was written from.
 
 Requires the .NET 10 SDK.
 

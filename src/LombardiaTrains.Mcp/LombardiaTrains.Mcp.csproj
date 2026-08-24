@@ -41,4 +41,10 @@
     <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- ParseWhen decides what "08:00" means and is not part of the tool surface,
+         but it is where a whole class of wrong answers would start. -->
+    <InternalsVisibleTo Include="LombardiaTrains.Tests" />
+  </ItemGroup>
+
 </Project>
