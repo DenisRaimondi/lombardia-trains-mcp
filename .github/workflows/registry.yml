@@ -1,0 +1,36 @@
+# Lists the server in the MCP registry.
+#
+# Separate from publishing, and manual, because the registry proves ownership by
+# reading the README of the *published* NuGet package. Run straight after a
+# release and it fails: nuget.org takes up to an hour to validate and index, and
+# until it does there is nothing for the registry to read.
+#
+# So: release, wait for the package to go live, then run this.
+name: registry
+
+on:
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write        # the registry authenticates this repo the same way
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mcp-publisher
+        run: |
+          version=$(gh release view --repo modelcontextprotocol/registry --json tagName -q .tagName)
+          curl -sL "https://github.com/modelcontextprotocol/registry/releases/download/${version}/mcp-publisher_linux_amd64.tar.gz" \
+            | tar -xz mcp-publisher
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Publish
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish .mcp/server.json
