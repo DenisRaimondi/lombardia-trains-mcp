@@ -48,6 +48,8 @@ public sealed record PlannedJourney(IReadOnlyList<PlannedLeg> Legs)
 /// </summary>
 public sealed class GtfsPlanner(GtfsClient gtfs)
 {
+    private sealed record Arrival(TimeSpan At, string TripId, List<TimedStop> Stops);
+
     private const int MinTransferMinutes = 4;
     private const int MaxTransferMinutes = 60;
 
@@ -132,8 +134,16 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
         Dictionary<string, List<TimedStop>> active, GtfsTimetable timetable,
         string from, string to, TimeSpan notBefore)
     {
-        // Everywhere reachable from the origin, with the earliest arrival at each.
-        var reachable = new Dictionary<string, (TimeSpan Arrival, string TripId, List<TimedStop> Stops)>();
+        // Everywhere reachable from the origin, and every train that gets there.
+        //
+        // Keeping only the earliest arrival at each interchange looks like an
+        // optimisation and is a bug: it fixes one first leg per interchange, so
+        // a later train reaching the same platform in time for the same
+        // connection can never be offered. The itinerary that came out was not
+        // wrong, it was just eighteen minutes of standing on a platform that
+        // nobody would choose — the official planner leaves Castellanza at
+        // 08:42 and arrives at Como at the same 09:44 this offered for 08:24.
+        var reachable = new Dictionary<string, List<Arrival>>();
 
         foreach (var (tripId, stops) in active)
         {
@@ -144,8 +154,9 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
             foreach (var stop in stops.Where(s => s.Seq > boarding.Seq))
             {
                 if (stop.Arrival is null) continue;
-                if (!reachable.TryGetValue(stop.StopId, out var best) || stop.Arrival < best.Arrival)
-                    reachable[stop.StopId] = (stop.Arrival.Value, tripId, stops);
+                if (!reachable.TryGetValue(stop.StopId, out var arrivals))
+                    reachable[stop.StopId] = arrivals = [];
+                arrivals.Add(new Arrival(stop.Arrival.Value, tripId, stops));
             }
         }
 
@@ -157,10 +168,18 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
             {
                 if (boarding.Departure is null) continue;
                 if (boarding.StopId == from) continue;
-                if (!reachable.TryGetValue(boarding.StopId, out var arrival)) continue;
+                if (!reachable.TryGetValue(boarding.StopId, out var arrivals)) continue;
 
-                var wait = (boarding.Departure.Value - arrival.Arrival).TotalMinutes;
-                if (wait < MinTransferMinutes || wait > MaxTransferMinutes) continue;
+                // Of the trains that make this connection, the last one: the
+                // same journey with the waiting taken out of it.
+                var arrival = arrivals
+                    .Where(a =>
+                    {
+                        var wait = (boarding.Departure.Value - a.At).TotalMinutes;
+                        return wait >= MinTransferMinutes && wait <= MaxTransferMinutes;
+                    })
+                    .MaxBy(a => a.At);
+                if (arrival is null) continue;
 
                 var second = BuildLeg(stops, timetable, tripId, boarding.StopId, to,
                     boarding.Departure.Value);

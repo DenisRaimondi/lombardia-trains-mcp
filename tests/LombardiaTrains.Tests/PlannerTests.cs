@@ -210,6 +210,50 @@ public class GtfsPlannerTests(ITestOutputHelper output)
         Assert.All(journeys, j => Assert.Equal(1, j.Changes));
     }
 
+    [Fact]
+    public async Task Waiting_is_not_added_where_a_later_train_makes_the_same_connection()
+    {
+        // Comparing against the published planner turned this up: both found the
+        // same connection out of Saronno, but this one boarded a train from
+        // Castellanza eighteen minutes earlier to reach it. The itinerary was
+        // valid and nobody would choose it.
+        //
+        // So for every journey with a change, no train may leave the origin
+        // later and still make the same second leg.
+        var journeys = await NewPlanner().PlanAsync(Castellanza, ComoLago, Weekday, Morning, 6);
+        var timetable = await Shared.GetTimetableAsync();
+        var running = await Shared.GetServicesOnAsync(Weekday);
+
+        foreach (var j in journeys.Where(j => j.Changes == 1))
+        {
+            var interchange = timetable.StopNames.First(kv => kv.Value == j.Legs[0].ToStop).Key;
+            var origin = timetable.StopNames[Castellanza];
+
+            var later = timetable.StopTimes
+                .Where(st => st.TripId is not null
+                             && timetable.Trips.TryGetValue(st.TripId, out var t)
+                             && GtfsClient.ServiceKey(t.ServiceId) is { } k && running.Contains(k))
+                .GroupBy(st => st.TripId!)
+                .Select(g => TripTimeline.Normalise(g))
+                .Select(stops =>
+                {
+                    var board = stops.FirstOrDefault(s => s.StopId == Castellanza
+                                                          && s.Departure > j.Departure);
+                    if (board?.Departure is null) return ((TimeSpan?)null, (TimeSpan?)null);
+                    var off = stops.FirstOrDefault(s => s.StopId == interchange && s.Seq > board.Seq);
+                    return (board.Departure, off?.Arrival);
+                })
+                .Where(x => x.Item1 is not null && x.Item2 is not null)
+                .Where(x => (j.Legs[1].Departure - x.Item2!.Value).TotalMinutes >= 4
+                            && (j.Legs[1].Departure - x.Item2!.Value).TotalMinutes <= 60)
+                .ToList();
+
+            Assert.True(later.Count == 0,
+                $"leaving {origin} at {j.Departure} for the {j.Legs[1].Departure} out of " +
+                $"{j.Legs[0].ToStop}, when a train at {later.FirstOrDefault().Item1} makes it too");
+        }
+    }
+
     // ------------------------------------------------------------ the edges
 
     [Fact]
