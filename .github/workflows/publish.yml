@@ -46,7 +46,11 @@ jobs:
         uses: NuGet/login@v1
         id: login
         with:
-          user: ${{ secrets.NUGET_USER }}
+          # The nuget.org profile name, not the email. It is written here
+          # rather than kept as a secret because it is not one: it is printed
+          # on the package page as the owner. What authenticates this job is
+          # the OIDC token, not this name.
+          user: denis_raimondi
 
       - name: Push
         run: >
