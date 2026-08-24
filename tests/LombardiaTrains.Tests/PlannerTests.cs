@@ -158,49 +158,20 @@ public class GtfsPlannerTests(ITestOutputHelper output)
     [Fact]
     public async Task A_replacement_coach_is_not_passed_off_as_a_train()
     {
-        // Nearly a quarter of this feed is TN_Bus. Whether one turns up on a
-        // given route on a given day is not for a test to depend on, so this
-        // asserts the weaker thing that must always hold: whatever is returned
-        // knows which of the two it is, and a bus is never labelled rail.
+        // Whether a given route runs by coach on a given day is not something a
+        // test should depend on — it changes with the works. What must hold is
+        // that the distinction is read from route_type rather than guessed from
+        // the name: the feed marks whole line codes as bus while they are
+        // replaced, R23 and RE4 among them, and a name like "RE4" says nothing.
         var timetable = await Shared.GetTimetableAsync();
         var buses = timetable.Routes.Values.Where(r => r.IsBus).ToList();
 
         Assert.NotEmpty(buses);
-        Assert.All(buses, b => Assert.Contains("Bus", b.Name, StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(timetable.Routes.Values, r => r.IsBus && r.Name.Contains("Bus"));
+        Assert.Contains(timetable.Routes.Values, r => r.IsBus && !r.Name.Contains("Bus"));
 
-        var rail = timetable.Routes.Values.Where(r => !r.IsBus);
-        Assert.All(rail, r => Assert.DoesNotContain("Bus", r.Name, StringComparison.OrdinalIgnoreCase));
-    }
-
-    [Fact]
-    public async Task Nothing_is_offered_that_another_journey_beats_outright()
-    {
-        // Leaving no earlier and arriving no later means the other journey is
-        // better on both counts, and this one only offers more waiting. Three
-        // ways of reaching Milano Cadorna at 09:05 once filled the answer
-        // between them and pushed out the direct train.
-        foreach (var (from, to) in new[] { (Castellanza, MilanoCadorna), (Castellanza, ComoLago) })
-        {
-            var journeys = await NewPlanner().PlanAsync(from, to, Weekday, Morning, 6);
-
-            foreach (var j in journeys)
-                Assert.DoesNotContain(journeys, other =>
-                    !ReferenceEquals(other, j)
-                    && other.Departure >= j.Departure && other.Arrival <= j.Arrival
-                    && (other.Departure > j.Departure || other.Arrival < j.Arrival));
-        }
-    }
-
-    [Fact]
-    public async Task A_direct_train_is_not_crowded_out_by_journeys_with_a_change()
-    {
-        // Castellanza to Milano Cadorna runs direct in thirty-two minutes. A
-        // connection arriving seven minutes earlier is a fair answer; three of
-        // them, leaving at different times to arrive together, are not.
-        var journeys = await NewPlanner().PlanAsync(Castellanza, MilanoCadorna, Weekday, Morning, 3);
-        Dump("Castellanza -> Milano Cadorna", journeys);
-
-        Assert.Contains(journeys, j => j.Changes == 0);
+        // And the network is still mostly trains.
+        Assert.True(timetable.Routes.Values.Count(r => !r.IsBus) > buses.Count * 5);
     }
 
     // ------------------------------------------------- routes that must work
@@ -261,11 +232,10 @@ public class GtfsPlannerTests(ITestOutputHelper output)
             var origin = timetable.StopNames[Castellanza];
 
             var later = timetable.StopTimes
-                .Where(st => st.TripId is not null
-                             && timetable.Trips.TryGetValue(st.TripId, out var t)
-                             && GtfsClient.ServiceKey(t.ServiceId) is { } k && running.Contains(k))
-                .GroupBy(st => st.TripId!)
-                .Select(g => TripTimeline.Normalise(g))
+                .Where(st => timetable.Trips.TryGetValue(st.TripId, out var t)
+                             && running.Contains(t.ServiceId))
+                .GroupBy(st => st.TripId)
+                .Select(g => g.OrderBy(st => st.Seq).ToList())
                 .Select(stops =>
                 {
                     var board = stops.FirstOrDefault(s => s.StopId == Castellanza

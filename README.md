@@ -154,53 +154,60 @@ Italian system and the endpoint silently returns nothing.
   nothing to report, which makes a naive deserializer throw.
 - `train_operator` uses `$:$` as its separator, literally.
 
-### The published timetable is not quite GTFS
+### Read the operator's file, not the portal's copy of it
 
-Regione Lombardia publishes the regional rail timetable under CC0, refreshed
-daily. Its `stop_id`s are the same codes ViaggiaTreno uses — `S01136` is the
-same station in both — so a planned journey joins to live delays and platforms
-with no translation table. That is the good news.
+Trenord publishes this timetable as a GTFS zip under CC0, and the same portal
+also serves it exploded into one queryable table per file. The tables look like
+the easier option — paged JSON, filterable, no zip to unpack — and they are a
+lossy copy. Measured against the file they are built from:
 
-Three things about the published form are not GTFS, and each one fails quietly:
+| | the zip | the tables |
+|---|---|---|
+| stop times | 90,553 | 68,952 |
+| trips | 8,470 | 6,265 |
 
-- **Times carry a placeholder date.** `1899-12-31T06:05:00.000` means 06:05.
-  GTFS expresses a service running past midnight as `24:05`; this form cannot,
-  so it comes back as `00:05` and a train that left at 23:50 appears to arrive
-  eighteen hours earlier than it departed. Read literally that makes 00:05 the
-  earliest arrival anywhere the last service reaches, and a search for the
-  earliest arrival then rejects every real morning connection. Each trip's
-  clock is made monotonic before anything is computed from it.
-- **`calendar` lost its columns.** Only `service_id` survived publication: the
-  weekday flags and the validity dates are gone, so the file cannot be used for
-  what it is for. It does not matter, because `calendar_dates` lists every
-  service-date pair explicitly rather than as exceptions to a weekly pattern.
-- **The two files name services differently.** `trips` writes
-  `124865-0b0cb949`, `calendar_dates` writes `124865-2026-08-21-2026-08-30`:
-  the same service, suffixed with a hash in one export and with its validity
-  period in the other. Joining on the full string matches nothing at all — not
-  an error, just an empty result — so both sides are cut back to the number
-  they share.
+A quarter of the timetable does not survive the import, and it does not go
+missing tidily: trips arrive **truncated**. Train 11827 runs Varese to Milano
+and on; in the tables it stops at Porta Garibaldi, so everything reachable by
+staying on it is invisible, and Varese to Bergamo came back an hour worse than
+the published answer. Reading the zip, it matches to the minute.
 
-Dates in `calendar_dates` are strings shaped `20260829`. Querying for
-`2026-08-29` returns zero rows rather than complaining.
+Three more things the import breaks, each of which costs real code to work
+around and none of which is wrong in the file:
 
-Two more, found by planning real journeys and comparing the answers:
+- **Times land inside a placeholder date.** GTFS writes a service past midnight
+  as `24:05`; a datetime cannot hold that, so it becomes `00:05` and the train
+  arrives eighteen hours before it left. The file says `24:05`.
+- **Service ids are rewritten with a hash** and no longer match the ones in
+  `calendar_dates`, so the two files cannot be joined on the key they share.
+  Cutting both back to the number before the hyphen makes them join again — and
+  merges every seasonal variant of a train into one, leaving nothing to say
+  which of them runs today. In the file, `trips` and `calendar_dates` both write
+  `1001A-2025-12-14-2026-12-12`. The join is exact and the ambiguity does not
+  exist.
+- **`trip_short_name` is dropped entirely.** That is the train number — the one
+  field that connects a planned leg to the live data.
 
-- **A train appears once per stopping pattern it has ever had.** `trips` carries
-  `1900025-5d11ed45` and `1900025-5299410e` — the same 08:52 to Varese, one
-  calling at twelve stops and one at fifteen. **1051 of 4715 services** have more
-  than one variant, up to eight. The calendar knows only the service number, and
-  the hash appears nowhere else, so nothing published says which variant runs
-  today. Uncollapsed, the planner offered the same departure three times over, a
-  minute apart, as though they were a choice. They are reduced to one, keeping
-  the latest arrival: pessimistic by a minute rather than promising a train that
-  gets there sooner than it will.
-- **Nearly a quarter of the feed is not trains.** 1489 of 6265 trips run on route
-  `TN_Bus`, "TN Bus sostitutivi" — replacement coaches, `route_type` 3 where rail
-  is 2. They are the real service on the day they run, so dropping them would be
-  worse than keeping them, but a coach leaves from the forecourt rather than a
-  platform, does not appear in the live train data, and a nine-minute connection
-  onto one is a different proposition. Legs on it are marked `[BUS]`.
+The decimal point also goes missing from coordinates, and `route_type` differs:
+the tables call R23 and RE4 trains, the file calls them buses.
+
+### The file still is not the operator's own answer
+
+Reading the zip does not close the gap with Trenord's own journey planner, and
+it is worth being precise about how big that gap is. Checked against 28
+published journeys, on the same day, from the same operator:
+
+- Milano Centrale to Bergamo: the feed times train 2217 at 48 minutes, the
+  planner at 52.
+- Pavia to Mortara: train 10668 arrives 09:28 in the feed, 09:23 in the planner.
+- Lecco to Bergamo: train 10719 reaches Ponte S.Pietro at 08:52 in the feed and
+  its connecting coach leaves at 08:51 — a connection the feed itself makes
+  impossible. The planner has the train in at 08:46 and the change works.
+
+The operator's planner runs HAFAS over an internal timetable with real-time
+folded in. The GTFS is an export of it, and an export is not the thing. Where a
+minute matters, `get_train` reads the live data instead — which is now possible
+per leg, because the file carries the train number.
 
 ### The planner behind the border does not know it is lost
 

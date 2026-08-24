@@ -1,131 +1,90 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.IO.Compression;
 using System.Net.Http.Headers;
-using System.Net.Http.Json;
-using System.Text.Json.Serialization;
 
 namespace LombardiaTrains.Mcp.Clients;
 
 /// <summary>
-/// Reads Regione Lombardia's regional rail timetable, published as GTFS under
-/// CC0 on dati.lombardia.it.
+/// Reads the regional rail timetable Trenord publishes as GTFS, under CC0, on
+/// dati.lombardia.it.
 ///
-/// This is the only source here that holds a complete timetable: every trip,
-/// every stop, every time. The live APIs answer "what is happening at this
-/// station right now"; this answers "what is scheduled, anywhere, on any day",
-/// which is what planning a journey with a change requires.
+/// It is read as the zip the operator generates, not through the portal's
+/// table-per-file API. The tables look easier — paged JSON, filterable — and are
+/// a lossy import of this same file:
 ///
-/// Its stop_ids are the same codes ViaggiaTreno uses — S01136 is Castellanza in
-/// both — so a planned journey joins directly to live delays and platforms with
-/// no translation table.
+///   * a quarter of the timetable is missing: 68,952 stop times against 90,553
+///     here, 6,265 trips against 8,470. Trips arrive truncated, so a train that
+///     runs Varese to Milano and beyond appeared to terminate halfway, and
+///     everything reachable by staying on it was invisible;
+///   * times land inside a placeholder date, which cannot express the 24:05 that
+///     GTFS uses for a service past midnight, so it comes back as 00:05 and the
+///     train arrives before it left;
+///   * service ids are rewritten with an opaque hash, and no longer match the
+///     ones in calendar_dates, so the two files cannot be joined on the key they
+///     are supposed to share;
+///   * the decimal point is dropped from coordinates;
+///   * trip_short_name — the train number, the one thing that connects a planned
+///     journey to the live data — is not carried over at all.
 ///
-/// Three things about the published data are worth knowing:
-///
-///  * Times carry a placeholder date: "1899-12-31T06:05:00.000" means 06:05.
-///  * calendar is unusable — the weekday and validity columns were lost in
-///    publication, leaving only service_id. It does not matter, because the
-///    feed lists every service-date pair in calendar_dates instead.
-///  * Dates in calendar_dates are strings shaped "20260829", not ISO. Querying
-///    for "2026-08-29" returns zero rows rather than an error.
+/// None of that is in the file itself. The stop ids are the codes ViaggiaTreno
+/// uses, so a planned journey joins to live delays and platforms with no
+/// translation table.
 /// </summary>
 public sealed class GtfsClient
 {
-    private const string BaseUrl = "https://www.dati.lombardia.it/resource";
-    private const string StopTimes = "4z9q-hrcb";
-    private const string Trips = "asyc-aywm";
-    private const string Routes = "yqye-t4rp";
-    private const string Stops = "j5jz-kvqn";
-    private const string CalendarDates = "ucn3-apr6";
-
-    /// <summary>Socrata caps a page at 50k rows, and stop_times is larger.</summary>
-    private const int PageSize = 50_000;
+    private const string FeedUrl = "https://www.dati.lombardia.it/download/3z4k-mxz9/application%2Fzip";
 
     private readonly HttpClient _http;
-
     private readonly SemaphoreSlim _loadGate = new(1, 1);
+
     private IReadOnlyList<GtfsStopTime>? _stopTimes;
     private IReadOnlyDictionary<string, GtfsTrip>? _trips;
     private IReadOnlyDictionary<string, GtfsRouteInfo>? _routes;
     private IReadOnlyDictionary<string, string>? _stopNames;
-    private readonly ConcurrentDictionary<string, HashSet<string>> _servicesByDate = new();
+    private IReadOnlyDictionary<string, GtfsStop>? _stops;
+    private IReadOnlyDictionary<string, HashSet<string>>? _servicesByDate;
 
     public GtfsClient(HttpClient http)
     {
         _http = http;
-        _http.BaseAddress ??= new Uri(BaseUrl + "/");
         if (!_http.DefaultRequestHeaders.Accept.Any())
-            _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/zip"));
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("lombardia-trains-mcp/1.0");
-        _http.Timeout = TimeSpan.FromMinutes(2);
+        _http.Timeout = TimeSpan.FromMinutes(3);
     }
 
     /// <summary>
-    /// Loads the timetable once and keeps it. Around 69k stop times and 6k
-    /// trips: small enough to hold in memory, and holding it turns every
-    /// subsequent question into a local lookup rather than a request.
+    /// Loads the feed once and keeps it. Around 90k stop times and 8k trips:
+    /// small enough to hold, and holding it turns every later question into a
+    /// local lookup rather than a request.
     /// </summary>
     public async Task<GtfsTimetable> GetTimetableAsync(CancellationToken ct = default)
     {
-        if (_stopTimes is not null)
-            return new GtfsTimetable(_stopTimes, _trips!, _routes!, _stopNames!);
-
-        await _loadGate.WaitAsync(ct);
-        try
-        {
-            if (_stopTimes is null)
-            {
-                var stopTimes = await FetchAllAsync<GtfsStopTime>(StopTimes, ct);
-                var trips = await FetchAllAsync<GtfsTrip>(Trips, ct);
-                var routes = await FetchAllAsync<GtfsRoute>(Routes, ct);
-                var stops = await FetchAllAsync<GtfsStop>(Stops, ct);
-
-                _stopTimes = stopTimes;
-                _trips = trips.Where(t => t.TripId is not null)
-                              .ToDictionary(t => t.TripId!, t => t);
-                _routes = routes.Where(r => r.RouteId is not null)
-                                .ToDictionary(r => r.RouteId!, r => new GtfsRouteInfo(
-                                    r.ShortName ?? r.LongName ?? r.RouteId!,
-                                    r.RouteType == "3"));
-                _stopNames = stops.Where(s => s.StopId is not null)
-                                  .ToDictionary(s => s.StopId!, s => s.StopName ?? s.StopId!);
-            }
-        }
-        finally
-        {
-            _loadGate.Release();
-        }
-
+        if (_stopTimes is null) await LoadAsync(ct);
         return new GtfsTimetable(_stopTimes!, _trips!, _routes!, _stopNames!);
     }
 
+    public async Task<IReadOnlyDictionary<string, GtfsStop>> GetStopsAsync(CancellationToken ct = default)
+    {
+        if (_stops is null) await LoadAsync(ct);
+        return _stops!;
+    }
+
     /// <summary>
-    /// Services running on a date, as join keys.
+    /// Services running on a date.
     ///
-    /// The two files disagree about how a service is named. trips writes
-    /// "124865-0b0cb949", calendar_dates writes "124865-2026-08-21-2026-08-30":
-    /// the same service, suffixed with a hash in one export and with its
-    /// validity period in the other. Joining on the full string matches nothing
-    /// at all, so both sides are reduced to the part before the first hyphen,
-    /// which is the service number they share.
-    ///
-    /// Past that, the feed lists every service-date pair explicitly, so this is
-    /// the whole answer rather than exceptions layered over a weekly pattern.
+    /// The feed carries no calendar.txt: every service-date pair is listed
+    /// explicitly in calendar_dates instead of as exceptions to a weekly
+    /// pattern. That is a legitimate way to write GTFS, and it means this is the
+    /// whole answer rather than half of one.
     /// </summary>
     public async Task<HashSet<string>> GetServicesOnAsync(DateOnly date, CancellationToken ct = default)
     {
+        if (_servicesByDate is null) await LoadAsync(ct);
+
         var key = date.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
-        if (_servicesByDate.TryGetValue(key, out var cached)) return cached;
-
-        var rows = await FetchAllAsync<GtfsCalendarDate>(
-            CalendarDates, ct, $"$where=date='{key}' AND exception_type='1'");
-
-        var services = rows.Select(r => ServiceKey(r.ServiceId))
-                           .Where(s => s is not null)
-                           .Select(s => s!)
-                           .ToHashSet(StringComparer.Ordinal);
-
-        _servicesByDate[key] = services;
-        return services;
+        return _servicesByDate!.TryGetValue(key, out var services) ? services : [];
     }
 
     /// <summary>
@@ -133,9 +92,9 @@ public sealed class GtfsClient
     ///
     /// Containment alone picks the wrong station. A name that is a prefix of
     /// another one — and on this network several are — matches both, and the
-    /// longer one can come first, so a request for one town returns the times
-    /// of a different station in it. An exact match therefore settles the
-    /// question before containment is considered at all.
+    /// longer one can come first, so a request for one town returns the times of
+    /// a different station in it. An exact match therefore settles the question
+    /// before containment is considered at all.
     /// </summary>
     public async Task<IReadOnlyList<GtfsStopMatch>> FindStopsAsync(
         string query, CancellationToken ct = default)
@@ -163,8 +122,7 @@ public sealed class GtfsClient
     ///
     /// Plain containment reaches inside words and returns places that merely
     /// share a run of letters: searching for one town brings back two villages
-    /// whose names happen to end in the same syllable. Requiring the match to
-    /// begin a word keeps a partial name useful without that.
+    /// whose names happen to end in the same syllable.
     /// </summary>
     private static bool StartsAWord(string name, string needle)
     {
@@ -177,37 +135,163 @@ public sealed class GtfsClient
         return false;
     }
 
-    /// <summary>The service number the two files agree on.</summary>
-    public static string? ServiceKey(string? serviceId)
+    private async Task LoadAsync(CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(serviceId)) return null;
-        var cut = serviceId.IndexOf('-');
-        return cut > 0 ? serviceId[..cut] : serviceId;
+        await _loadGate.WaitAsync(ct);
+        try
+        {
+            if (_stopTimes is not null) return;
+
+            await using var stream = await _http.GetStreamAsync(FeedUrl, ct);
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer, ct);
+            buffer.Position = 0;
+
+            using var archive = new ZipArchive(buffer, ZipArchiveMode.Read);
+
+            var stops = Read(archive, "stops.txt", r => new GtfsStop(
+                r["stop_id"], r["stop_name"], Coordinate(r, "stop_lat"), Coordinate(r, "stop_lon")))
+                .Where(s => s.Id.Length > 0)
+                .ToDictionary(s => s.Id, s => s);
+
+            var routes = Read(archive, "routes.txt", r => (
+                Id: r["route_id"],
+                Info: new GtfsRouteInfo(
+                    Blank(r["route_short_name"]) ?? Blank(r["route_long_name"]) ?? r["route_id"],
+                    r["route_type"] == "3")))
+                .Where(x => x.Id.Length > 0)
+                .ToDictionary(x => x.Id, x => x.Info);
+
+            var trips = Read(archive, "trips.txt", r => new GtfsTrip(
+                r["trip_id"], r["route_id"], r["service_id"], Blank(r["trip_short_name"])))
+                .Where(t => t.TripId.Length > 0)
+                .ToDictionary(t => t.TripId, t => t);
+
+            var stopTimes = Read(archive, "stop_times.txt", r => new GtfsStopTime(
+                r["trip_id"], r["stop_id"],
+                int.TryParse(r["stop_sequence"], out var seq) ? seq : 0,
+                Clock(r["arrival_time"]), Clock(r["departure_time"])))
+                .Where(st => st.TripId.Length > 0)
+                .ToList();
+
+            var byDate = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+            foreach (var row in Read(archive, "calendar_dates.txt",
+                         r => (Service: r["service_id"], Date: r["date"], Type: r["exception_type"])))
+            {
+                if (row.Type != "1") continue;
+                if (!byDate.TryGetValue(row.Date, out var set))
+                    byDate[row.Date] = set = new HashSet<string>(StringComparer.Ordinal);
+                set.Add(row.Service);
+            }
+
+            _stops = stops;
+            _stopNames = stops.ToDictionary(kv => kv.Key, kv => kv.Value.Name);
+            _routes = routes;
+            _trips = trips;
+            _stopTimes = stopTimes;
+            _servicesByDate = byDate;
+        }
+        finally
+        {
+            _loadGate.Release();
+        }
     }
 
-    private async Task<List<T>> FetchAllAsync<T>(
-        string dataset, CancellationToken ct, string? filter = null)
+    private static string? Blank(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static double? Coordinate(IReadOnlyDictionary<string, string> row, string field) =>
+        double.TryParse(row.GetValueOrDefault(field), NumberStyles.Float,
+            CultureInfo.InvariantCulture, out var value) ? value : null;
+
+    /// <summary>
+    /// Reads a GTFS time. Hours run past 24 for a service that crosses midnight
+    /// — 24:05 is five past midnight on the day the trip started — which is the
+    /// whole point of the format and is why TimeSpan.Parse cannot be used: it
+    /// treats three parts as h:m:s and overflows on anything past 23.
+    /// </summary>
+    private static TimeSpan? Clock(string? raw)
     {
-        var all = new List<T>();
-        var offset = 0;
+        if (string.IsNullOrWhiteSpace(raw)) return null;
 
-        while (true)
+        var parts = raw.Split(':');
+        if (parts.Length < 2) return null;
+
+        if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var h) ||
+            !int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var m))
+            return null;
+
+        var s = parts.Length > 2 &&
+                int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var sec)
+            ? sec : 0;
+
+        return new TimeSpan(h, m, s);
+    }
+
+    private static IEnumerable<T> Read<T>(
+        ZipArchive archive, string name, Func<IReadOnlyDictionary<string, string>, T> map)
+    {
+        var entry = archive.Entries.FirstOrDefault(e =>
+            string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidDataException($"the feed does not contain {name}");
+
+        using var reader = new StreamReader(entry.Open());
+
+        var header = ReadRow(reader);
+        if (header is null) yield break;
+
+        // The first field can carry a byte-order mark, which would otherwise
+        // make the column called "trip_id" unfindable by that name.
+        if (header.Count > 0) header[0] = header[0].TrimStart('﻿');
+
+        var results = new List<T>();
+        while (ReadRow(reader) is { } row)
         {
-            var query = $"{dataset}.json?$limit={PageSize}&$offset={offset}" +
-                        (filter is null ? "" : "&" + filter);
-
-            var page = await _http.GetFromJsonAsync<List<T>>(query, ct) ?? [];
-            all.AddRange(page);
-
-            if (page.Count < PageSize) break;
-            offset += PageSize;
+            var record = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < header.Count; i++)
+                record[header[i]] = i < row.Count ? row[i] : "";
+            results.Add(map(record));
         }
 
-        return all;
+        foreach (var r in results) yield return r;
+    }
+
+    /// <summary>
+    /// One CSV record. Quoted fields may contain commas and doubled quotes, and
+    /// station names in this feed do contain commas.
+    /// </summary>
+    private static List<string>? ReadRow(StreamReader reader)
+    {
+        var line = reader.ReadLine();
+        if (line is null) return null;
+
+        var fields = new List<string>();
+        var field = new System.Text.StringBuilder();
+        var quoted = false;
+
+        for (var i = 0; i < line.Length; i++)
+        {
+            var c = line[i];
+
+            if (quoted)
+            {
+                if (c != '"') { field.Append(c); continue; }
+                if (i + 1 < line.Length && line[i + 1] == '"') { field.Append('"'); i++; continue; }
+                quoted = false;
+            }
+            else if (c == '"') quoted = true;
+            else if (c == ',') { fields.Add(field.ToString()); field.Clear(); }
+            else field.Append(c);
+        }
+
+        fields.Add(field.ToString());
+        return fields;
     }
 }
 
 public sealed record GtfsStopMatch(string Id, string Name);
+
+public sealed record GtfsStop(string Id, string Name, double? Lat, double? Lon);
 
 public sealed record GtfsTimetable(
     IReadOnlyList<GtfsStopTime> StopTimes,
@@ -227,59 +311,11 @@ public sealed record GtfsTimetable(
 /// </summary>
 public sealed record GtfsRouteInfo(string Name, bool IsBus);
 
-public sealed class GtfsStopTime
-{
-    [JsonPropertyName("trip_id")] public string? TripId { get; init; }
-    [JsonPropertyName("stop_id")] public string? StopId { get; init; }
-    [JsonPropertyName("stop_sequence")] public string? Sequence { get; init; }
+/// <summary>
+/// A trip. <paramref name="ShortName"/> carries the number the train is known
+/// by — "RE_2 - 2217" — which is what lets a planned leg be handed to get_train.
+/// </summary>
+public sealed record GtfsTrip(string TripId, string RouteId, string ServiceId, string? ShortName);
 
-    /// <summary>"1899-12-31T06:05:00.000" — only the time part means anything.</summary>
-    [JsonPropertyName("arrival_time")] public string? ArrivalRaw { get; init; }
-    [JsonPropertyName("departure_time")] public string? DepartureRaw { get; init; }
-
-    [JsonIgnore] public int Seq => int.TryParse(Sequence, out var s) ? s : 0;
-    [JsonIgnore] public TimeSpan? Arrival => ParseTime(ArrivalRaw);
-    [JsonIgnore] public TimeSpan? Departure => ParseTime(DepartureRaw);
-
-    /// <summary>
-    /// Takes the time out of the placeholder date. A GTFS time may legitimately
-    /// exceed 24 hours for a service running past midnight; the published form
-    /// cannot express that, so anything before 03:00 is left as it is and the
-    /// caller compares within a single day.
-    /// </summary>
-    private static TimeSpan? ParseTime(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw)) return null;
-        var t = raw.Contains('T') ? raw[(raw.IndexOf('T') + 1)..] : raw;
-        if (t.Length >= 8) t = t[..8];
-        return TimeSpan.TryParse(t, CultureInfo.InvariantCulture, out var ts) ? ts : null;
-    }
-}
-
-public sealed class GtfsTrip
-{
-    [JsonPropertyName("trip_id")] public string? TripId { get; init; }
-    [JsonPropertyName("route_id")] public string? RouteId { get; init; }
-    [JsonPropertyName("service_id")] public string? ServiceId { get; init; }
-}
-
-public sealed class GtfsRoute
-{
-    [JsonPropertyName("route_id")] public string? RouteId { get; init; }
-    [JsonPropertyName("route_short_name")] public string? ShortName { get; init; }
-    [JsonPropertyName("route_long_name")] public string? LongName { get; init; }
-    [JsonPropertyName("route_type")] public string? RouteType { get; init; }
-}
-
-public sealed class GtfsStop
-{
-    [JsonPropertyName("stop_id")] public string? StopId { get; init; }
-    [JsonPropertyName("stop_name")] public string? StopName { get; init; }
-}
-
-public sealed class GtfsCalendarDate
-{
-    [JsonPropertyName("service_id")] public string? ServiceId { get; init; }
-    [JsonPropertyName("date")] public string? Date { get; init; }
-    [JsonPropertyName("exception_type")] public string? ExceptionType { get; init; }
-}
+public sealed record GtfsStopTime(
+    string TripId, string StopId, int Seq, TimeSpan? Arrival, TimeSpan? Departure);

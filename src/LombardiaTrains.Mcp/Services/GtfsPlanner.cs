@@ -54,7 +54,7 @@ public sealed record PlannedJourney(IReadOnlyList<PlannedLeg> Legs)
 /// </summary>
 public sealed class GtfsPlanner(GtfsClient gtfs)
 {
-    private sealed record Arrival(TimeSpan At, TimeSpan LeftAt, string TripId, List<TimedStop> Stops);
+    private sealed record Arrival(TimeSpan At, TimeSpan LeftAt, string TripId, List<GtfsStopTime> Stops);
 
     private const int MinTransferMinutes = 4;
     private const int MaxTransferMinutes = 60;
@@ -77,16 +77,15 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
         var timetable = await gtfs.GetTimetableAsync(ct);
         var running = await gtfs.GetServicesOnAsync(date, ct);
 
-        // Only the trips that actually run on the requested day, with each
-        // trip's clock made monotonic so a service crossing midnight does not
-        // appear to arrive before it left.
+        // Only the trips that actually run on the requested day. The feed names
+        // a service the same way in trips and in calendar_dates, so this is an
+        // exact join: no key to reconstruct, and no trip admitted on a day it
+        // does not run.
         var active = timetable.StopTimes
-            .Where(st => st.TripId is not null
-                         && timetable.Trips.TryGetValue(st.TripId, out var trip)
-                         && GtfsClient.ServiceKey(trip.ServiceId) is { } key
-                         && running.Contains(key))
-            .GroupBy(st => st.TripId!)
-            .ToDictionary(g => g.Key, g => TripTimeline.Normalise(g));
+            .Where(st => timetable.Trips.TryGetValue(st.TripId, out var trip)
+                         && running.Contains(trip.ServiceId))
+            .GroupBy(st => st.TripId)
+            .ToDictionary(g => g.Key, g => g.OrderBy(st => st.Seq).ToList());
 
         // Both searches always run. Returning the direct trains as soon as there
         // are enough of them looks like an obvious saving and quietly answers a
@@ -105,20 +104,13 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
     }
 
     /// <summary>
-    /// Reduces the variants of a service to the one journey it really is.
+    /// Reduces journeys a traveller cannot tell apart to one, then drops the
+    /// ones nothing would choose.
     ///
-    /// A train appears in this feed once per stopping pattern it has ever had,
-    /// each labelled with an opaque hash — 1051 of 4715 services carry more than
-    /// one, up to eight. The calendar names only the service number, so nothing
-    /// published says which variant runs today. Left alone that shows the same
-    /// train two or three times over, at slightly different minutes, as if they
-    /// were alternatives to each other.
-    ///
-    /// Where the variants disagree, the earliest arrival is kept. That is not a
-    /// principle, it is calibration: in both cases that could be checked against
-    /// the operator's own planner — Lecco to Sondrio at 09:19 against 09:20,
-    /// Bozzolo to Mantova at 10:38 against 10:44 — the published answer was the
-    /// earlier one. Keeping the later looked safer and was wrong twice.
+    /// Two services can leave the same stop at the same minute for the same
+    /// place — two replacement coaches out of Bozzolo did — and offering both,
+    /// six minutes apart on arrival, is a choice nobody standing there could
+    /// act on.
     /// </summary>
     private static List<PlannedJourney> Collapse(IEnumerable<PlannedJourney> journeys)
     {
@@ -152,7 +144,7 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
         && (a.Departure > b.Departure || a.Arrival < b.Arrival);
 
     private static List<PlannedJourney> FindDirect(
-        Dictionary<string, List<TimedStop>> active, GtfsTimetable timetable,
+        Dictionary<string, List<GtfsStopTime>> active, GtfsTimetable timetable,
         string from, string to, TimeSpan notBefore)
     {
         var result = new List<PlannedJourney>();
@@ -167,7 +159,7 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
     }
 
     private static List<PlannedJourney> FindOneChange(
-        Dictionary<string, List<TimedStop>> active, GtfsTimetable timetable,
+        Dictionary<string, List<GtfsStopTime>> active, GtfsTimetable timetable,
         string from, string to, TimeSpan notBefore)
     {
         // Everywhere reachable from the origin, and every train that gets there.
@@ -249,7 +241,7 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
     /// a train heading the other way from being offered.
     /// </summary>
     private static PlannedLeg? BuildLeg(
-        List<TimedStop> stops, GtfsTimetable timetable, string tripId,
+        List<GtfsStopTime> stops, GtfsTimetable timetable, string tripId,
         string from, string to, TimeSpan notBefore)
     {
         var boarding = stops.FirstOrDefault(s => s.StopId == from && s.Departure >= notBefore);
@@ -258,13 +250,20 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
         var alighting = stops.FirstOrDefault(s => s.StopId == to && s.Seq > boarding.Seq);
         if (alighting?.Arrival is null) return null;
 
-        var route = timetable.Trips.TryGetValue(tripId, out var trip) && trip.RouteId is not null
-                    && timetable.Routes.TryGetValue(trip.RouteId, out var info)
+        timetable.Trips.TryGetValue(tripId, out var trip);
+        var route = trip is not null && timetable.Routes.TryGetValue(trip.RouteId, out var info)
             ? info
             : new GtfsRouteInfo("train", false);
 
+        // The number the train is known by, so the leg can be handed straight to
+        // get_train. The feed writes it as "RE_2 - 2217"; the part after the
+        // dash is what a board or a ticket calls it.
+        var number = trip?.ShortName is { } name && name.Contains('-')
+            ? name[(name.LastIndexOf('-') + 1)..].Trim()
+            : trip?.ShortName ?? tripId;
+
         return new PlannedLeg(
-            route.Name, GtfsClient.ServiceKey(tripId) ?? tripId, route.IsBus,
+            route.Name, number, route.IsBus,
             timetable.StopNames.GetValueOrDefault(from, from), boarding.Departure.Value,
             timetable.StopNames.GetValueOrDefault(to, to), alighting.Arrival.Value);
     }
