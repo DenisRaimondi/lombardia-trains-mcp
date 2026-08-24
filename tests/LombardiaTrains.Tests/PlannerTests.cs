@@ -172,6 +172,37 @@ public class GtfsPlannerTests(ITestOutputHelper output)
         Assert.All(rail, r => Assert.DoesNotContain("Bus", r.Name, StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public async Task Nothing_is_offered_that_another_journey_beats_outright()
+    {
+        // Leaving no earlier and arriving no later means the other journey is
+        // better on both counts, and this one only offers more waiting. Three
+        // ways of reaching Milano Cadorna at 09:05 once filled the answer
+        // between them and pushed out the direct train.
+        foreach (var (from, to) in new[] { (Castellanza, MilanoCadorna), (Castellanza, ComoLago) })
+        {
+            var journeys = await NewPlanner().PlanAsync(from, to, Weekday, Morning, 6);
+
+            foreach (var j in journeys)
+                Assert.DoesNotContain(journeys, other =>
+                    !ReferenceEquals(other, j)
+                    && other.Departure >= j.Departure && other.Arrival <= j.Arrival
+                    && (other.Departure > j.Departure || other.Arrival < j.Arrival));
+        }
+    }
+
+    [Fact]
+    public async Task A_direct_train_is_not_crowded_out_by_journeys_with_a_change()
+    {
+        // Castellanza to Milano Cadorna runs direct in thirty-two minutes. A
+        // connection arriving seven minutes earlier is a fair answer; three of
+        // them, leaving at different times to arrive together, are not.
+        var journeys = await NewPlanner().PlanAsync(Castellanza, MilanoCadorna, Weekday, Morning, 3);
+        Dump("Castellanza -> Milano Cadorna", journeys);
+
+        Assert.Contains(journeys, j => j.Changes == 0);
+    }
+
     // ------------------------------------------------- routes that must work
 
     [Theory]

@@ -223,6 +223,30 @@ Termini* matches nothing in Locarno. An answer that fails it is discarded rather
 than passed on, and the reply names the live tools, which do work for those
 stations.
 
+### Where the open data is simply wrong
+
+Planned journeys were compared against the operator's own planner across
+thirty-seven routes, and a third source — the live train data — was asked to
+settle the cases where the two disagreed. Most matched to the minute. Three did
+not, and none of the three is fixable here:
+
+- **Milano Centrale to Bergamo is four minutes short.** The feed times the RE2
+  at forty-eight minutes; the operator's planner says fifty-two, and the live
+  data for that train agrees with the operator. Same five stops, same departure
+  — the last leg into Bergamo is simply timed wrong.
+- **A trip can stop short of where the train goes.** S5 11827 runs Varese to
+  Milano and beyond; in this feed it ends at Milano Porta Garibaldi. Everything
+  reachable by staying on it is therefore invisible, which is why Varese to
+  Bergamo comes back an hour worse than the published answer. An exhaustive
+  search over the feed confirms nothing better exists in it.
+- **Which variant of a train runs today is not published**, so where two
+  disagree by a minute one of them is wrong and there is no way to tell which.
+  The earlier arrival is taken, because in both cases that could be checked the
+  operator published the earlier one.
+
+The planner is not more accurate than its source and does not pretend to be.
+Where a minute matters, `get_train` reads the operator's own live data.
+
 ### Coverage
 
 Trenord covers its own fleet, FNM included. ViaggiaTreno covers the RFI network

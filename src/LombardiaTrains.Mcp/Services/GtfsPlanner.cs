@@ -54,7 +54,7 @@ public sealed record PlannedJourney(IReadOnlyList<PlannedLeg> Legs)
 /// </summary>
 public sealed class GtfsPlanner(GtfsClient gtfs)
 {
-    private sealed record Arrival(TimeSpan At, string TripId, List<TimedStop> Stops);
+    private sealed record Arrival(TimeSpan At, TimeSpan LeftAt, string TripId, List<TimedStop> Stops);
 
     private const int MinTransferMinutes = 4;
     private const int MaxTransferMinutes = 60;
@@ -88,10 +88,15 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
             .GroupBy(st => st.TripId!)
             .ToDictionary(g => g.Key, g => TripTimeline.Normalise(g));
 
-        var direct = Collapse(FindDirect(active, timetable, fromStopId, toStopId, notBefore));
-        if (direct.Count >= maxResults)
-            return direct.Take(maxResults).ToList();
-
+        // Both searches always run. Returning the direct trains as soon as there
+        // are enough of them looks like an obvious saving and quietly answers a
+        // different question: asked for one journey from Mantova, it offered a
+        // replacement coach at 19:27 because that was the only train doing the
+        // whole route, while a train and a connection got there at 09:28.
+        //
+        // A direct service is not better for being direct. It is better when it
+        // arrives sooner, and that is decided by ranking them together.
+        var direct = FindDirect(active, timetable, fromStopId, toStopId, notBefore);
         var viaChange = FindOneChange(active, timetable, fromStopId, toStopId, notBefore);
 
         return Collapse(direct.Concat(viaChange))
@@ -109,17 +114,42 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
     /// train two or three times over, at slightly different minutes, as if they
     /// were alternatives to each other.
     ///
-    /// Where the variants disagree, the latest arrival is kept. The error is
-    /// then a minute of pessimism rather than a promise that cannot be met.
+    /// Where the variants disagree, the earliest arrival is kept. That is not a
+    /// principle, it is calibration: in both cases that could be checked against
+    /// the operator's own planner — Lecco to Sondrio at 09:19 against 09:20,
+    /// Bozzolo to Mantova at 10:38 against 10:44 — the published answer was the
+    /// earlier one. Keeping the later looked safer and was wrong twice.
     /// </summary>
-    private static List<PlannedJourney> Collapse(IEnumerable<PlannedJourney> journeys) =>
-        journeys
+    private static List<PlannedJourney> Collapse(IEnumerable<PlannedJourney> journeys)
+    {
+        var distinct = journeys
             .GroupBy(j => j.Signature)
-            .Select(g => g.OrderByDescending(j => j.Arrival).First())
+            .Select(g => g.OrderBy(j => j.Arrival).First())
+            .ToList();
+
+        // Then drop the ones nothing would choose. A journey is beaten when
+        // another leaves no earlier and arrives no later: same or better on both
+        // counts, so the only thing the loser offers is more time on a platform.
+        //
+        // Without this, three ways of reaching Milano Cadorna at 09:05 filled
+        // the answer — leaving at 08:06, 08:18 and 08:24, all arriving together
+        // — and pushed out the direct train that runs it in thirty-two minutes.
+        var kept = distinct
+            .Where(j => !distinct.Any(other => Beats(other, j)))
+            .ToList();
+
+        return kept
             .OrderBy(j => j.Arrival)
             .ThenBy(j => j.Changes)
             .ThenBy(j => j.DurationMinutes)
             .ToList();
+    }
+
+    private static bool Beats(PlannedJourney a, PlannedJourney b) =>
+        !ReferenceEquals(a, b)
+        && a.Departure >= b.Departure
+        && a.Arrival <= b.Arrival
+        && (a.Departure > b.Departure || a.Arrival < b.Arrival);
 
     private static List<PlannedJourney> FindDirect(
         Dictionary<string, List<TimedStop>> active, GtfsTimetable timetable,
@@ -162,7 +192,8 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
                 if (stop.Arrival is null) continue;
                 if (!reachable.TryGetValue(stop.StopId, out var arrivals))
                     reachable[stop.StopId] = arrivals = [];
-                arrivals.Add(new Arrival(stop.Arrival.Value, tripId, stops));
+                arrivals.Add(new Arrival(
+                    stop.Arrival.Value, boarding.Departure!.Value, tripId, stops));
             }
         }
 
@@ -184,7 +215,12 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
                         var wait = (boarding.Departure.Value - a.At).TotalMinutes;
                         return wait >= MinTransferMinutes && wait <= MaxTransferMinutes;
                     })
-                    .MaxBy(a => a.At);
+                    .OrderByDescending(a => a.At)
+                    // Two trains reaching the interchange at the same minute are
+                    // not the same offer: take the one that left later, and the
+                    // difference is time not spent waiting at the origin.
+                    .ThenByDescending(a => a.LeftAt)
+                    .FirstOrDefault();
                 if (arrival is null) continue;
 
                 var second = BuildLeg(stops, timetable, tripId, boarding.StopId, to,
