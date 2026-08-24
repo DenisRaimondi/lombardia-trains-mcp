@@ -14,7 +14,16 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Three platforms because one of these is a real question, not a formality:
+    # the clock is read as TimeZoneInfo.FindSystemTimeZoneById("Europe/Rome"),
+    # an IANA name, and Windows keeps its own list. Everything this server says
+    # about a departure depends on that lookup working.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
