@@ -1,6 +1,6 @@
 # Lombardia Trains MCP
 
-<!-- mcp-name: io.github.denisraimondi/lombardia-trains -->
+<!-- mcp-name: io.github.DenisRaimondi/lombardia-trains -->
 
 An MCP server that answers questions about Lombardy trains: departure and
 arrival boards, live delays, platforms, stop-by-stop progress, cancellations
