@@ -184,6 +184,24 @@ Three things about the published form are not GTFS, and each one fails quietly:
 Dates in `calendar_dates` are strings shaped `20260829`. Querying for
 `2026-08-29` returns zero rows rather than complaining.
 
+Two more, found by planning real journeys and comparing the answers:
+
+- **A train appears once per stopping pattern it has ever had.** `trips` carries
+  `1900025-5d11ed45` and `1900025-5299410e` — the same 08:52 to Varese, one
+  calling at twelve stops and one at fifteen. **1051 of 4715 services** have more
+  than one variant, up to eight. The calendar knows only the service number, and
+  the hash appears nowhere else, so nothing published says which variant runs
+  today. Uncollapsed, the planner offered the same departure three times over, a
+  minute apart, as though they were a choice. They are reduced to one, keeping
+  the latest arrival: pessimistic by a minute rather than promising a train that
+  gets there sooner than it will.
+- **Nearly a quarter of the feed is not trains.** 1489 of 6265 trips run on route
+  `TN_Bus`, "TN Bus sostitutivi" — replacement coaches, `route_type` 3 where rail
+  is 2. They are the real service on the day they run, so dropping them would be
+  worse than keeping them, but a coach leaves from the forecourt rather than a
+  platform, does not appear in the live train data, and a nine-minute connection
+  onto one is a different proposition. Legs on it are marked `[BUS]`.
+
 ### Coverage
 
 Trenord covers its own fleet, FNM included. ViaggiaTreno covers the RFI network

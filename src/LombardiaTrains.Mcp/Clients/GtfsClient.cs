@@ -45,7 +45,7 @@ public sealed class GtfsClient
     private readonly SemaphoreSlim _loadGate = new(1, 1);
     private IReadOnlyList<GtfsStopTime>? _stopTimes;
     private IReadOnlyDictionary<string, GtfsTrip>? _trips;
-    private IReadOnlyDictionary<string, string>? _routeNames;
+    private IReadOnlyDictionary<string, GtfsRouteInfo>? _routes;
     private IReadOnlyDictionary<string, string>? _stopNames;
     private readonly ConcurrentDictionary<string, HashSet<string>> _servicesByDate = new();
 
@@ -67,7 +67,7 @@ public sealed class GtfsClient
     public async Task<GtfsTimetable> GetTimetableAsync(CancellationToken ct = default)
     {
         if (_stopTimes is not null)
-            return new GtfsTimetable(_stopTimes, _trips!, _routeNames!, _stopNames!);
+            return new GtfsTimetable(_stopTimes, _trips!, _routes!, _stopNames!);
 
         await _loadGate.WaitAsync(ct);
         try
@@ -82,8 +82,10 @@ public sealed class GtfsClient
                 _stopTimes = stopTimes;
                 _trips = trips.Where(t => t.TripId is not null)
                               .ToDictionary(t => t.TripId!, t => t);
-                _routeNames = routes.Where(r => r.RouteId is not null)
-                                    .ToDictionary(r => r.RouteId!, r => r.ShortName ?? r.LongName ?? r.RouteId!);
+                _routes = routes.Where(r => r.RouteId is not null)
+                                .ToDictionary(r => r.RouteId!, r => new GtfsRouteInfo(
+                                    r.ShortName ?? r.LongName ?? r.RouteId!,
+                                    r.RouteType == "3"));
                 _stopNames = stops.Where(s => s.StopId is not null)
                                   .ToDictionary(s => s.StopId!, s => s.StopName ?? s.StopId!);
             }
@@ -93,7 +95,7 @@ public sealed class GtfsClient
             _loadGate.Release();
         }
 
-        return new GtfsTimetable(_stopTimes!, _trips!, _routeNames!, _stopNames!);
+        return new GtfsTimetable(_stopTimes!, _trips!, _routes!, _stopNames!);
     }
 
     /// <summary>
@@ -210,8 +212,20 @@ public sealed record GtfsStopMatch(string Id, string Name);
 public sealed record GtfsTimetable(
     IReadOnlyList<GtfsStopTime> StopTimes,
     IReadOnlyDictionary<string, GtfsTrip> Trips,
-    IReadOnlyDictionary<string, string> RouteNames,
+    IReadOnlyDictionary<string, GtfsRouteInfo> Routes,
     IReadOnlyDictionary<string, string> StopNames);
+
+/// <summary>
+/// A line, and whether it is actually a train.
+///
+/// Nearly a quarter of the trips in this feed are on route TN_Bus, "TN Bus
+/// sostitutivi": coaches replacing trains where a line is closed. They are the
+/// real service on the day they run, so leaving them out would be worse than
+/// including them — but they are not trains, they do not leave from a platform,
+/// and a nine-minute connection onto one is a different proposition. GTFS says
+/// which is which in route_type: 2 is rail, 3 is bus.
+/// </summary>
+public sealed record GtfsRouteInfo(string Name, bool IsBus);
 
 public sealed class GtfsStopTime
 {
@@ -254,6 +268,7 @@ public sealed class GtfsRoute
     [JsonPropertyName("route_id")] public string? RouteId { get; init; }
     [JsonPropertyName("route_short_name")] public string? ShortName { get; init; }
     [JsonPropertyName("route_long_name")] public string? LongName { get; init; }
+    [JsonPropertyName("route_type")] public string? RouteType { get; init; }
 }
 
 public sealed class GtfsStop

@@ -3,7 +3,8 @@ using LombardiaTrains.Mcp.Clients;
 namespace LombardiaTrains.Mcp.Services;
 
 public sealed record PlannedLeg(
-    string Route, string FromStop, TimeSpan Departure, string ToStop, TimeSpan Arrival);
+    string Route, string Trip, bool IsBus,
+    string FromStop, TimeSpan Departure, string ToStop, TimeSpan Arrival);
 
 public sealed record PlannedJourney(IReadOnlyList<PlannedLeg> Legs)
 {
@@ -15,6 +16,15 @@ public sealed record PlannedJourney(IReadOnlyList<PlannedLeg> Legs)
     /// <summary>Minutes available at the interchange, for a single-change journey.</summary>
     public int? TransferMinutes =>
         Legs.Count == 2 ? (int)(Legs[1].Departure - Legs[0].Arrival).TotalMinutes : null;
+
+    public bool HasBus => Legs.Any(l => l.IsBus);
+
+    /// <summary>
+    /// The journey as the services that make it up, ignoring which published
+    /// variant of each one this happens to be.
+    /// </summary>
+    internal string Signature =>
+        string.Join("|", Legs.Select(l => $"{l.Trip}:{l.FromStop}>{l.ToStop}"));
 }
 
 /// <summary>
@@ -70,19 +80,38 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
             .GroupBy(st => st.TripId!)
             .ToDictionary(g => g.Key, g => TripTimeline.Normalise(g));
 
-        var direct = FindDirect(active, timetable, fromStopId, toStopId, notBefore);
+        var direct = Collapse(FindDirect(active, timetable, fromStopId, toStopId, notBefore));
         if (direct.Count >= maxResults)
             return direct.Take(maxResults).ToList();
 
         var viaChange = FindOneChange(active, timetable, fromStopId, toStopId, notBefore);
 
-        return direct.Concat(viaChange)
-            .OrderBy(j => j.Arrival)
-            .ThenBy(j => j.Changes)
-            .ThenBy(j => j.DurationMinutes)
+        return Collapse(direct.Concat(viaChange))
             .Take(maxResults)
             .ToList();
     }
+
+    /// <summary>
+    /// Reduces the variants of a service to the one journey it really is.
+    ///
+    /// A train appears in this feed once per stopping pattern it has ever had,
+    /// each labelled with an opaque hash — 1051 of 4715 services carry more than
+    /// one, up to eight. The calendar names only the service number, so nothing
+    /// published says which variant runs today. Left alone that shows the same
+    /// train two or three times over, at slightly different minutes, as if they
+    /// were alternatives to each other.
+    ///
+    /// Where the variants disagree, the latest arrival is kept. The error is
+    /// then a minute of pessimism rather than a promise that cannot be met.
+    /// </summary>
+    private static List<PlannedJourney> Collapse(IEnumerable<PlannedJourney> journeys) =>
+        journeys
+            .GroupBy(j => j.Signature)
+            .Select(g => g.OrderByDescending(j => j.Arrival).First())
+            .OrderBy(j => j.Arrival)
+            .ThenBy(j => j.Changes)
+            .ThenBy(j => j.DurationMinutes)
+            .ToList();
 
     private static List<PlannedJourney> FindDirect(
         Dictionary<string, List<TimedStop>> active, GtfsTimetable timetable,
@@ -169,12 +198,12 @@ public sealed class GtfsPlanner(GtfsClient gtfs)
         if (alighting?.Arrival is null) return null;
 
         var route = timetable.Trips.TryGetValue(tripId, out var trip) && trip.RouteId is not null
-                    && timetable.RouteNames.TryGetValue(trip.RouteId, out var name)
-            ? name
-            : "train";
+                    && timetable.Routes.TryGetValue(trip.RouteId, out var info)
+            ? info
+            : new GtfsRouteInfo("train", false);
 
         return new PlannedLeg(
-            route,
+            route.Name, GtfsClient.ServiceKey(tripId) ?? tripId, route.IsBus,
             timetable.StopNames.GetValueOrDefault(from, from), boarding.Departure.Value,
             timetable.StopNames.GetValueOrDefault(to, to), alighting.Arrival.Value);
     }

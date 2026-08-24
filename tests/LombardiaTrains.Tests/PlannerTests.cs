@@ -31,6 +31,7 @@ public class GtfsPlannerTests(ITestOutputHelper output)
     private const string Lugano = "S05300";
     private const string MilanoCadorna = "S01066";
     private const string MalpensaT2 = "S01146";
+    private const string VareseNord = "S01738";
 
     private static readonly DateOnly Weekday = NextWeekday();
     private static readonly TimeSpan Morning = new(8, 0, 0);
@@ -135,6 +136,40 @@ public class GtfsPlannerTests(ITestOutputHelper output)
     {
         var journeys = await NewPlanner().PlanAsync(Castellanza, Lugano, Weekday, Morning, 6);
         Assert.All(journeys, j => Assert.InRange(j.Changes, 0, 1));
+    }
+
+    [Fact]
+    public async Task The_same_service_is_never_offered_twice()
+    {
+        // A train appears in the feed once per stopping pattern it has ever had,
+        // and nothing published says which one runs today. Uncollapsed, the same
+        // departure comes back two or three times a minute apart, presented as a
+        // choice between alternatives that do not exist.
+        var journeys = await NewPlanner().PlanAsync(MilanoCadorna, VareseNord, Weekday, Morning, 6);
+        Dump("Milano Cadorna -> Varese Nord", journeys);
+
+        var signatures = journeys.Select(j => j.Signature).ToList();
+        Assert.Equal(signatures.Distinct().Count(), signatures.Count);
+
+        var departures = journeys.Select(j => (j.Departure, j.Legs[0].Route)).ToList();
+        Assert.Equal(departures.Distinct().Count(), departures.Count);
+    }
+
+    [Fact]
+    public async Task A_replacement_coach_is_not_passed_off_as_a_train()
+    {
+        // Nearly a quarter of this feed is TN_Bus. Whether one turns up on a
+        // given route on a given day is not for a test to depend on, so this
+        // asserts the weaker thing that must always hold: whatever is returned
+        // knows which of the two it is, and a bus is never labelled rail.
+        var timetable = await Shared.GetTimetableAsync();
+        var buses = timetable.Routes.Values.Where(r => r.IsBus).ToList();
+
+        Assert.NotEmpty(buses);
+        Assert.All(buses, b => Assert.Contains("Bus", b.Name, StringComparison.OrdinalIgnoreCase));
+
+        var rail = timetable.Routes.Values.Where(r => !r.IsBus);
+        Assert.All(rail, r => Assert.DoesNotContain("Bus", r.Name, StringComparison.OrdinalIgnoreCase));
     }
 
     // ------------------------------------------------- routes that must work

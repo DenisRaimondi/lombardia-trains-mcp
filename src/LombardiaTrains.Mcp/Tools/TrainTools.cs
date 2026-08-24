@@ -289,9 +289,13 @@ public sealed class TrainTools(
             for (var i = 0; i < journey.Legs.Count; i++)
             {
                 var leg = journey.Legs[i];
+                // A replacement coach is marked. It leaves from the forecourt,
+                // not a platform, and a caller told only "TN Bus" reads it as
+                // the name of a line.
+                var mode = leg.IsBus ? "  [BUS]" : "";
                 sb.AppendLine(
                     $"      {leg.Route,-8} {Trim(leg.FromStop, 24),-24} {leg.Departure:hh\\:mm}" +
-                    $" -> {Trim(leg.ToStop, 24),-24} {leg.Arrival:hh\\:mm}");
+                    $" -> {Trim(leg.ToStop, 24),-24} {leg.Arrival:hh\\:mm}{mode}");
 
                 if (i + 1 < journey.Legs.Count)
                 {
@@ -305,6 +309,12 @@ public sealed class TrainTools(
             "\n  These are timetabled times from the regional feed: no delays, no platforms, " +
             "and no account of a train cancelled today. Check the trains themselves with " +
             "get_departures or get_train before relying on a tight change.");
+
+        if (journeys.Any(j => j.HasBus))
+            sb.AppendLine(
+                "  A leg marked [BUS] is a replacement coach, not a train. It leaves from " +
+                "outside the station rather than a platform, is not in the live train data, " +
+                "and takes longer than the timetable suggests when the road is busy.");
 
         return sb.ToString();
     }
