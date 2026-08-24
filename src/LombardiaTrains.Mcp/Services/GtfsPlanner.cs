@@ -2,8 +2,12 @@ using LombardiaTrains.Mcp.Clients;
 
 namespace LombardiaTrains.Mcp.Services;
 
+/// <summary>
+/// One leg. <paramref name="Train"/> is the number the train is known by, which
+/// is what lets the leg be looked up in the operator's live data.
+/// </summary>
 public sealed record PlannedLeg(
-    string Route, string Trip, bool IsBus,
+    string Route, string Train, bool IsBus,
     string FromStop, TimeSpan Departure, string ToStop, TimeSpan Arrival);
 
 public sealed record PlannedJourney(IReadOnlyList<PlannedLeg> Legs)

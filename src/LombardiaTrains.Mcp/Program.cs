@@ -28,6 +28,7 @@ builder.Services.AddHttpClient<GtfsClient>();
 // holding them would keep the first handler alive for the life of the process.
 builder.Services.AddTransient<ConnectionFinder>();
 builder.Services.AddTransient<GtfsPlanner>();
+builder.Services.AddTransient<LiveCheck>();
 
 // Named on purpose. Left alone, a server introduces itself with its assembly
 // name and its four-part assembly version — "LombardiaTrains.Mcp 0.1.0.0" —

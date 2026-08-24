@@ -31,7 +31,8 @@ public sealed class TrainTools(
     SwissTransportClient swiss,
     ConnectionFinder connections,
     GtfsClient gtfs,
-    GtfsPlanner planner)
+    GtfsPlanner planner,
+    LiveCheck live)
 {
     /// <summary>
     /// What to say when a journey cannot be planned. The tools that do work
@@ -39,6 +40,9 @@ public sealed class TrainTools(
     /// on its own reads as "this server cannot help with these stations", and
     /// for live departures and delays it can.
     /// </summary>
+    /// <summary>Below this, a change is not one a traveller would make.</summary>
+    private const int MinimumChangeMinutes = 4;
+
     private const string OutsideThePlan =
         "Journey planning covers the Lombardy regional network and the lines across the Swiss " +
         "border. Elsewhere in Italy there is no timetable here to plan from — but the live data " +
@@ -317,6 +321,19 @@ public sealed class TrainTools(
                    "Asking again in two halves, through a station on the way, will find one " +
                    "if it exists.";
 
+        // The timetable is an export and disagrees with the operator by a few
+        // minutes on some trains. The feed now carries the train number, so each
+        // leg can be asked about directly — but only for a day the live sources
+        // still hold, and only for the journeys about to be shown.
+        var rome = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, ViaggiaTrenoClient.RomeTz);
+        var checkable = (when.Date - rome.Date).TotalDays is >= 0 and <= 1;
+
+        var status = new Dictionary<PlannedLeg, LegStatus>();
+        if (checkable)
+            foreach (var leg in journeys.SelectMany(j => j.Legs).Where(l => !l.IsBus).Distinct())
+                if (await live.CheckAsync(leg, ct) is { } found)
+                    status[leg] = found;
+
         var sb = new StringBuilder(
             $"{origin[0].Name} -> {destination[0].Name}, from {Stamp(when)}\n");
 
@@ -324,12 +341,17 @@ public sealed class TrainTools(
         {
             var changes = journey.Changes == 0 ? "direct" :
                 journey.Changes == 1 ? "1 change" : $"{journey.Changes} changes";
-            var d = journey.DurationMinutes;
+
+            // The heading has to agree with the legs under it. Left as planned
+            // while the legs show what the operator says, a journey announces
+            // 08:53 and then lists a train arriving at 08:57.
+            var starts = Shown(journey.Legs[0], status).Departure;
+            var ends = Shown(journey.Legs[^1], status).Arrival;
+            var d = (int)(ends - starts).TotalMinutes;
             var length = d < 60 ? $"{d}min" : $"{d / 60}h{d % 60:00}";
 
             sb.AppendLine(
-                $"\n  {journey.Departure:hh\\:mm} -> {journey.Arrival:hh\\:mm}   " +
-                $"{length}, {changes}");
+                $"\n  {starts:hh\\:mm} -> {ends:hh\\:mm}   {length}, {changes}");
 
             for (var i = 0; i < journey.Legs.Count; i++)
             {
@@ -338,22 +360,47 @@ public sealed class TrainTools(
                 // not a platform, and a caller told only "TN Bus" reads it as
                 // the name of a line.
                 var mode = leg.IsBus ? "  [BUS]" : "";
+
+                // Where the operator has been asked, its answer is the one shown
+                // and the timetable's is kept alongside it: a leg the two
+                // disagree about is exactly the leg not to build a tight change
+                // on.
+                var (departure, arrival) = Shown(leg, status);
+                var note = "";
+
+                if (status.TryGetValue(leg, out var real))
+                {
+                    if (departure != leg.Departure || arrival != leg.Arrival)
+                        note += $"  (timetable: {leg.Departure:hh\\:mm}-{leg.Arrival:hh\\:mm})";
+                    if (real.Platform is not null) note += $"  platform {real.Platform}";
+                    if (real.Delay is { } late and not 0) note += $"  {FormatDelay(late)}";
+                    if (real.Cancelled) note += "  ** CANCELLED **";
+                }
+
                 sb.AppendLine(
-                    $"      {leg.Route,-8} {Trim(leg.FromStop, 24),-24} {leg.Departure:hh\\:mm}" +
-                    $" -> {Trim(leg.ToStop, 24),-24} {leg.Arrival:hh\\:mm}{mode}");
+                    $"      {leg.Route,-6} {leg.Train,-6} {Trim(leg.FromStop, 22),-22} {departure:hh\\:mm}" +
+                    $" -> {Trim(leg.ToStop, 22),-22} {arrival:hh\\:mm}{mode}{note}");
 
                 if (i + 1 < journey.Legs.Count)
                 {
-                    var wait = (int)(journey.Legs[i + 1].Departure - leg.Arrival).TotalMinutes;
-                    sb.AppendLine($"      {"",-8} change at {leg.ToStop}, {wait} min");
+                    var next = journey.Legs[i + 1];
+                    var wait = (int)(Shown(next, status).Departure - arrival).TotalMinutes;
+                    var warning = wait < MinimumChangeMinutes
+                        ? "  ** too tight: the operator's times do not leave enough to change **"
+                        : "";
+
+                    sb.AppendLine($"      {"",-13} change at {leg.ToStop}, {wait} min{warning}");
                 }
             }
         }
 
-        sb.AppendLine(
-            "\n  These are timetabled times from the regional feed: no delays, no platforms, " +
-            "and no account of a train cancelled today. Check the trains themselves with " +
-            "get_departures or get_train before relying on a tight change.");
+        sb.AppendLine(status.Count > 0
+            ? "\n  Times shown are the operator's own, read live per train; where they differ " +
+              "from the timetable this planned from, the timetable's are given in brackets. " +
+              "A leg with no live answer is timetabled only."
+            : "\n  These are timetabled times from the regional feed: no delays, no platforms, " +
+              "and no account of a train cancelled today. The live sources are only asked for " +
+              "today and tomorrow; for any other day, check with get_train nearer the time.");
 
         if (journeys.Any(j => j.HasBus))
             sb.AppendLine(
@@ -393,6 +440,16 @@ public sealed class TrainTools(
         return new string(kept.Select(c => char.IsLetterOrDigit(c) ? char.ToLowerInvariant(c) : ' ')
                               .ToArray());
     }
+
+    /// <summary>
+    /// The times to show for a leg: the operator's where it answered, the
+    /// timetable's where it did not.
+    /// </summary>
+    private static (TimeSpan Departure, TimeSpan Arrival) Shown(
+        PlannedLeg leg, IReadOnlyDictionary<PlannedLeg, LegStatus> status) =>
+        status.TryGetValue(leg, out var real)
+            ? (real.Departure ?? leg.Departure, real.Arrival ?? leg.Arrival)
+            : (leg.Departure, leg.Arrival);
 
     private static string Ambiguous(string input, IReadOnlyList<GtfsStopMatch> matches)
     {

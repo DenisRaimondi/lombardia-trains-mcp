@@ -30,7 +30,7 @@ public class ToolTests(ITestOutputHelper output)
         return new TrainTools(
             viaggiaTreno, trenord, swiss,
             new ConnectionFinder(viaggiaTreno, trenord),
-            gtfs, new GtfsPlanner(gtfs));
+            gtfs, new GtfsPlanner(gtfs), new LiveCheck(trenord));
     }
 
     private static string Tomorrow(string time) =>
@@ -124,9 +124,10 @@ public class ToolTests(ITestOutputHelper output)
         Assert.Contains("Como Lago", text);
         Assert.Contains("change", text);
 
-        // Scheduled times carry no delays, and a caller that does not know
-        // that will trust a four-minute transfer it should not.
-        Assert.Contains("get_departures", text);
+        // The caller must be told what kind of time it is looking at: the
+        // operator's, read live, or the timetable's with no delays in it.
+        Assert.True(text.Contains("read live per train") || text.Contains("timetabled times"),
+            "the answer does not say where its times come from");
     }
 
     [Fact]
@@ -242,6 +243,49 @@ public class ToolTests(ITestOutputHelper output)
         // asking instead of splitting the journey.
         Assert.Contains("one change", text);
         Assert.Contains("not a gap in coverage", text);
+    }
+
+    [Fact]
+    public async Task A_leg_is_shown_with_the_operators_own_times()
+    {
+        // The timetable is an export and is a few minutes out on some trains.
+        // Each leg carries a train number now, so the operator can be asked
+        // directly — and when it answers, its times are the ones shown and the
+        // timetable's are kept in brackets beside them.
+        var text = await NewTools().FindJourneyAsync("Milano Centrale", "Bergamo", Tomorrow("08:00"));
+        Show("find_journey, checked live", text);
+
+        Assert.Contains("read live per train", text);
+        Assert.Contains("2217", text);          // the number, not just the line
+    }
+
+    [Fact]
+    public async Task A_journey_heading_agrees_with_the_legs_beneath_it()
+    {
+        // Correcting the legs and leaving the heading planned makes a journey
+        // announce one arrival and then list another.
+        var text = await NewTools().FindJourneyAsync("Milano Centrale", "Bergamo", Tomorrow("08:00"));
+
+        var lines = text.Split('\n');
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var head = System.Text.RegularExpressions.Regex.Match(
+                lines[i], @"^  (\d\d:\d\d) -> (\d\d:\d\d)");
+            if (!head.Success) continue;
+
+            var legs = lines.Skip(i + 1)
+                .TakeWhile(l => l.StartsWith("      "))
+                // Only the times before the bracket: what follows it is the
+                // timetable's version, kept for comparison.
+                .Select(l => System.Text.RegularExpressions.Regex.Matches(
+                    l.Split('(')[0], @"\d\d:\d\d"))
+                .Where(ms => ms.Count >= 2)
+                .ToList();
+            if (legs.Count == 0) continue;
+
+            Assert.Equal(head.Groups[1].Value, legs[0][0].Value);
+            Assert.Equal(head.Groups[2].Value, legs[^1][1].Value);
+        }
     }
 
     // ------------------------------------------------------------ direct-only

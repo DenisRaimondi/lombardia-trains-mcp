@@ -191,23 +191,33 @@ around and none of which is wrong in the file:
 The decimal point also goes missing from coordinates, and `route_type` differs:
 the tables call R23 and RE4 trains, the file calls them buses.
 
-### The file still is not the operator's own answer
+### Ask the operator, then say so
 
-Reading the zip does not close the gap with Trenord's own journey planner, and
-it is worth being precise about how big that gap is. Checked against 28
-published journeys, on the same day, from the same operator:
+The file is not the operator's own answer either, and it is worth being precise
+about the size of the gap. Checked against 28 journeys published by the
+operator's own planner, on the same day:
 
 - Milano Centrale to Bergamo: the feed times train 2217 at 48 minutes, the
-  planner at 52.
-- Pavia to Mortara: train 10668 arrives 09:28 in the feed, 09:23 in the planner.
+  operator at 52.
+- Pavia to Mortara: train 10668 arrives 09:28 in the feed, 09:23 in the answer.
 - Lecco to Bergamo: train 10719 reaches Ponte S.Pietro at 08:52 in the feed and
-  its connecting coach leaves at 08:51 — a connection the feed itself makes
-  impossible. The planner has the train in at 08:46 and the change works.
+  its connecting coach leaves at 08:51 — a change the feed itself makes
+  impossible and the operator has working with five minutes to spare.
 
-The operator's planner runs HAFAS over an internal timetable with real-time
-folded in. The GTFS is an export of it, and an export is not the thing. Where a
-minute matters, `get_train` reads the live data instead — which is now possible
-per leg, because the file carries the train number.
+The operator runs HAFAS over an internal timetable with real-time folded in. A
+GTFS export of it is not it. But the live sources here are the operator's own,
+and the file carries the train number, so every leg can simply be looked up and
+asked. Where it answers, its times are the ones shown, the timetable's are kept
+in brackets beside them, and platforms, delays and cancellations come with them.
+
+Against those same 28 journeys that takes exact agreement from 22 to **27**.
+
+The one that remains is the shape of what this cannot do. Lecco to Bergamo is
+still answered with the 09:01 coach rather than the 08:51 one, because the feed
+said the train arrived at 08:52 and the search discarded that connection before
+anything was checked. Correcting after the planning fixes what is shown; it
+does not recover what the wrong data excluded. Live data is asked for today and
+tomorrow only — beyond that there is nothing live to ask.
 
 ### The planner behind the border does not know it is lost
 
