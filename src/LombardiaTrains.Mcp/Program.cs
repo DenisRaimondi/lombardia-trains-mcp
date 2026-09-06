@@ -10,7 +10,16 @@ using System.Reflection;
 // read as protocol. Anything logged to the console has to go to stderr instead,
 // otherwise the first log line breaks the session with a parse error that is
 // very hard to trace back to its cause.
-var builder = Host.CreateApplicationBuilder(args);
+// The content root defaults to the working directory, and the host watches it
+// recursively for configuration changes. A client starts this server from
+// wherever it happens to be — a home directory, say — and the server would then
+// spend its time on every file event under that tree. Its own directory is the
+// only one it has any business watching.
+var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
+{
+    Args = args,
+    ContentRootPath = AppContext.BaseDirectory,
+});
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole(options =>

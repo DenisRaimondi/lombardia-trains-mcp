@@ -15,7 +15,7 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>lombardia-trains-mcp</ToolCommandName>
     <PackageId>LombardiaTrains.Mcp</PackageId>
-    <Version>0.1.1</Version>
+    <Version>0.1.2</Version>
     <Authors>Denis Raimondi</Authors>
     <Title>Lombardia Trains MCP server</Title>
     <Description>MCP server for live Lombardy train information. Queries the public ViaggiaTreno (RFI/Trenitalia) and Trenord APIs for departure and arrival boards, delays, platforms, stop-by-stop progress, cancellations and crowding. No API key required.</Description>

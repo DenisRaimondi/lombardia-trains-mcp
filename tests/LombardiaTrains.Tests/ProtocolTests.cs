@@ -21,7 +21,7 @@ public class ProtocolTests(ITestOutputHelper output) : IDisposable
 {
     private readonly Process _server = Start();
 
-    private static Process Start()
+    private static string ServerDll()
     {
         var here = AppContext.BaseDirectory;                       // .../bin/<cfg>/net10.0/
         var config = new DirectoryInfo(here).Parent!.Name;         // Debug or Release
@@ -30,16 +30,31 @@ public class ProtocolTests(ITestOutputHelper output) : IDisposable
                                "bin", config, "net10.0", "LombardiaTrains.Mcp.dll");
 
         Assert.True(File.Exists(dll), $"server not built at {dll}");
+        return dll;
+    }
 
-        var process = Process.Start(new ProcessStartInfo("dotnet", $"\"{dll}\"")
+    private static Process Start(string? workingDirectory = null)
+    {
+        var info = new ProcessStartInfo("dotnet", $"\"{ServerDll()}\"")
         {
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false
-        })!;
+        };
+        if (workingDirectory is not null) info.WorkingDirectory = workingDirectory;
 
-        return process;
+        return Process.Start(info)!;
+    }
+
+    private static void Kill(Process process)
+    {
+        try
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+        }
+        catch (InvalidOperationException) { }
+        process.Dispose();
     }
 
     private void Send(object message) =>
@@ -185,14 +200,58 @@ public class ProtocolTests(ITestOutputHelper output) : IDisposable
         Assert.False(_server.HasExited, "the server exited on an unknown tool name");
     }
 
-    public void Dispose()
+    /// <summary>
+    /// The host takes the working directory as its content root and watches it,
+    /// recursively, for configuration changes. A client starts this server from
+    /// wherever it happens to be — a home directory, say — and the server then
+    /// spends its time on every file event under that tree: seen at 145% CPU
+    /// and 11 GB with no tool ever called. The content root has to be the
+    /// directory the server is installed in, whatever the client's is.
+    /// </summary>
+    [Fact]
+    public async Task The_content_root_is_the_install_directory_and_not_where_the_client_ran_it()
     {
+        var elsewhere = Directory.CreateTempSubdirectory("lombardia-trains-cwd-").FullName;
+        var server = Start(workingDirectory: elsewhere);
         try
         {
-            if (!_server.HasExited) _server.Kill(entireProcessTree: true);
+            var reported = await ReportedContentRoot(server);
+            output.WriteLine($"content root: {reported}");
+
+            var installed = Path.GetDirectoryName(ServerDll())!;
+            Assert.Equal(Normalize(installed), Normalize(reported), ignoreCase: true);
         }
-        catch (InvalidOperationException) { }
-        _server.Dispose();
+        finally
+        {
+            Kill(server);
+            Directory.Delete(elsewhere, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// The hosting lifetime logs its content root on stderr at startup; that is
+    /// the only place the running server states it.
+    /// </summary>
+    private static async Task<string> ReportedContentRoot(Process server)
+    {
+        const string prefix = "Content root path:";
+        var deadline = TimeSpan.FromSeconds(60);
+
+        while (await server.StandardError.ReadLineAsync().WaitAsync(deadline) is { } line)
+        {
+            var at = line.IndexOf(prefix, StringComparison.Ordinal);
+            if (at >= 0) return line[(at + prefix.Length)..].Trim();
+        }
+
+        throw new InvalidOperationException("the server never reported its content root");
+    }
+
+    private static string Normalize(string path) =>
+        Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+
+    public void Dispose()
+    {
+        Kill(_server);
         GC.SuppressFinalize(this);
     }
 }
